@@ -15,11 +15,13 @@ wave and the snake fades back into its resting pose, which is exactly frame 0,
 so the loop seam is invisible.
 
 Motion plumbing:
-- The route is one <path>: straight grid runs joined by quarter-circle corners
-  of radius P/2, so its length is known exactly. Every bead is an SMIL
-  <animateMotion> along it with linear keyPoints; bead k simply sits a fixed
-  distance behind the head, so the body is rigid along the curve and every
-  bead moves at the same speed.
+- The route is one path: straight grid runs joined by quarter-circle corners
+  of radius P/2, so its length is known exactly. Every bead rides it with CSS
+  motion-path (offset-path / offset-distance keyframes); bead k simply sits a
+  fixed distance behind the head, so the body is rigid along the curve and every
+  bead moves at the same speed. Everything animates on the one CSS clock: SMIL
+  and CSS timelines start and pause independently inside an <img>, which let
+  the head drift away from the cells it was eating.
 - Cells, crumbs and the regrow wave: one @keyframes per eaten day, with
   percentages taken from the head's arrival time. Only transform and opacity
   are animated.
@@ -348,7 +350,7 @@ def _snake_art(sf: dict, motion=None, rest_xy=None) -> str:
     """The body beads, the head bead and the straw hat.
 
     With motion=None every bead is placed by rest_xy(k) (the resting pose).
-    Otherwise motion(k) returns the <animateMotion> for bead k (0 = head).
+    Otherwise motion(k) returns the CSS classes that move bead k (0 = head).
     """
     out = []
 
@@ -357,7 +359,7 @@ def _snake_art(sf: dict, motion=None, rest_xy=None) -> str:
         if motion is None:
             x, y = rest_xy(k)
             return f'<g transform="translate({_n(x, 2)},{_n(y, 2)})"><g{c}>{inner}</g></g>'
-        return f'<g>{motion(k)}<g{c}>{inner}</g></g>'
+        return f'<g class="{motion(k)}"><g{c}>{inner}</g></g>'
 
     # soft sun glow riding under the head
     out.append(g(0, '<circle r="15" fill="url(#halo)"/>'))
@@ -588,17 +590,20 @@ def render_snake(stats: dict, mode: str) -> str:
     rest = f'<g class="rest">{_snake_art(sf, rest_xy=rest_xy)}</g>'
     if animated:
         t1, t2, t3 = HOLD / dur, t_out / dur, (t_out + JUMP) / dur
-        kt = f"0;{_n(t1, 5)};{_n(t2, 5)};{_n(t3, 5)};1"
+
+        p1, p2, p3 = (_n(t * 100, 3) + "%" for t in (t1, t2, t3))
+        css.append(f'.mv{{offset-path:path("{route}");offset-rotate:0deg;animation:{lap} linear}}')
 
         def motion(k: int) -> str:
-            a = _n((d0 - k * GAP) / length, 5)
-            b = _n((length - k * GAP) / length, 5)
-            return (f'<animateMotion dur="{ds}" repeatCount="indefinite" calcMode="linear" '
-                    f'keyPoints="{a};{a};{b};{a};{a}" keyTimes="{kt}"><mpath href="#route"/></animateMotion>')
+            a = _n((d0 - k * GAP) / length * 100, 3)
+            b = _n((length - k * GAP) / length * 100, 3)
+            css.append(f".m{k}{{animation-name:m{k}}}@keyframes m{k}{{0%,{p1}{{offset-distance:{a}%}}"
+                       f"{p2}{{offset-distance:{b}%}}{p3},100%{{offset-distance:{a}%}}}}")
+            return f"mv m{k}"
 
         live = (f'<g clip-path="url(#card)"><g class="live"><g class="rise">'
                 f'{_snake_art(sf, motion)}</g></g></g>')
-        route_def = f'<path id="route" d="{route}"/>' + "".join(
+        route_def = "".join(
             f'<path id="k{i}" d="M0-7h0M6.1-3.5h0M6.1 3.5h0M0 7h0M-6.1 3.5h0M-6.1-3.5h0" fill="none" '
             f'stroke="{ramp[i]}" stroke-width="2.4" stroke-linecap="round"/>' for i in (2, 3, 4))
     else:
