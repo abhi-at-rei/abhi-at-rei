@@ -113,9 +113,6 @@ def _short_date(iso: object) -> str:
 
 def _streak(stats: dict) -> tuple:
     st = stats.get("streak") or {}
-    cur = _int(st.get("current"))
-    if cur > 0:
-        return cur, "Current streak"
     return _int(st.get("longest")), "Longest streak"
 
 

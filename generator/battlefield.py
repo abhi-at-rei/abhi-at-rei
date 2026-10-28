@@ -218,13 +218,10 @@ def _summary(stats: dict) -> dict:
             run = run + 1 if d["count"] > 0 else 0
             longest = max(longest, run)
         streak = {"current": 0, "longest": longest}
-    # Streak to highlight: the current one if it is alive, otherwise the longest.
+    # Streak to highlight: always the longest, so the bridge, poster and dossier agree
+    # and a short live run never replaces the record. (fetch.py keeps the longest range current.)
     st_live = False
-    if (streak.get("current") or 0) > 0 and streak.get("current_start"):
-        st_len, st_from = streak["current"], streak["current_start"]
-        st_to = (dt.date.fromisoformat(st_from) + dt.timedelta(days=st_len - 1)).isoformat()
-        st_live = True
-    elif streak.get("longest_start") and streak.get("longest_end"):
+    if streak.get("longest_start") and streak.get("longest_end"):
         st_len, st_from, st_to = streak.get("longest", 0), streak["longest_start"], streak["longest_end"]
     else:  # derive the longest run from the calendar
         st_len, st_from, st_to, run, start = 0, None, None, 0, None
@@ -572,6 +569,10 @@ def render_battlefield(stats: dict, mode: str) -> str:
                 f'stroke="{_shade(gold, .35)}" stroke-width=".8"/>' for x, y in pts
             )
             lx, ly = min(pts, key=lambda p: p[1])
+            if s["best"] and s["best"]["date"] in tops:
+                px_, py_ = tops[s["best"]["date"]]
+                if abs(px_ - lx) < 130 and abs(py_ - ly) < 40:
+                    ly -= 24  # the pennant label sits here; lift the streak label above it
             a(
                 f'<g><path d="{d_}" fill="none" stroke="{STRAW_HAT["sun_glow"]}" stroke-width="6" opacity=".5" filter="url(#glow)"/>'
                 f'<path d="{d_}" fill="none" stroke="{text}" stroke-width="3.4" stroke-linecap="round" opacity=".75"/>'
@@ -984,17 +985,26 @@ def _hud(s: dict, m: dict, ramp: list) -> str:
         (momentum_value(mo), "momentum" if mo and mo["pct"] is not None else "this month",
          mo["label"] if mo and mo["pct"] is not None else (_span(mo["current_start"], mo["current_end"]) if mo else "no data yet")),
     ]
-    widths = [max(_est(v, 25, .54), _est(lab, 13, .6), _est(det, 13, .58)) for v, lab, det in cols]
-    gap = 22
-    x = 810 - sum(widths) - gap * (len(cols) - 1)
+    # The columns must clear the total's label; tighten the type, then the wording, until they do.
+    left_min = 38 + vw + _est("contributions", 16, .6) + 26
+    tiers = [(25, 13, 22), (23, 12, 16), (22, 12, 12)]
+    for vfs2, sfs, gap in tiers:
+        widths = [max(_est(v, vfs2, .54), _est(lab, sfs, .6), _est(det, sfs, .58)) for v, lab, det in cols]
+        x = 810 - sum(widths) - gap * (len(cols) - 1)
+        if x >= left_min:
+            break
+    if x < left_min and s["busiest"]:
+        cols[2] = (cols[2][0], cols[2][1], f"{s['busiest_total']:,} total")
+        widths = [max(_est(v, vfs2, .54), _est(lab, sfs, .6), _est(det, sfs, .58)) for v, lab, det in cols]
+        x = max(left_min, 810 - sum(widths) - gap * (len(cols) - 1))
     for k, ((v, lab, det), w) in enumerate(zip(cols, widths)):
         if k:
             parts.append(f'<path d="M{_f(x - gap / 2)},58V114" stroke="{edge}" stroke-width=".8"/>')
         accent = ramp[4] if k == 4 and mo and (mo["pct"] or 0) > 0 else text
         parts.append(
-            f'<text x="{_f(x)}" y="80" class="metric" font-size="25" fill="{accent}">{_esc(v)}</text>'
-            f'<text x="{_f(x)}" y="98" font-size="13" font-weight="600" fill="{text}">{_esc(lab)}</text>'
-            f'<text x="{_f(x)}" y="114" font-size="13" fill="{muted}">{_esc(det)}</text>'
+            f'<text x="{_f(x)}" y="80" class="metric" font-size="{vfs2}" fill="{accent}">{_esc(v)}</text>'
+            f'<text x="{_f(x)}" y="98" font-size="{sfs}" font-weight="600" fill="{text}">{_esc(lab)}</text>'
+            f'<text x="{_f(x)}" y="114" font-size="{sfs}" fill="{muted}">{_esc(det)}</text>'
         )
         x += w + gap
     return "<g>" + "".join(parts) + "</g>"

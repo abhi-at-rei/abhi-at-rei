@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "generator"))
+import fetch
 from fetch import derive, streaks
 
 
@@ -47,6 +48,30 @@ class StreakTests(unittest.TestCase):
     def test_incomplete_profile_fails(self):
         with self.assertRaises(ValueError):
             derive({"data": {"user": None}})
+
+
+
+
+
+class AvatarTests(unittest.TestCase):
+    def test_download_creates_missing_data_dir(self):
+        import io
+        import tempfile
+        from unittest import mock
+
+        class Resp(io.BytesIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(fetch, "ROOT", Path(tmp)), \
+                mock.patch("urllib.request.urlopen", return_value=Resp(b"png")):
+            # data/ is gitignored, so a fresh CI checkout has no such directory
+            self.assertTrue(fetch.download_avatar("https://example.invalid/a.png"))
+            self.assertEqual((Path(tmp) / "data" / "avatar.png").read_bytes(), b"png")
 
 
 if __name__ == "__main__":

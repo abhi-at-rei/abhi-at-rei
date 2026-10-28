@@ -93,7 +93,7 @@ Playful editions of the same aggregate calendar data, not additional work claims
       <img alt="LangGraph" src="https://img.shields.io/badge/LangGraph-1C3C3C?style=flat-square&amp;logo=langgraph&amp;logoColor=white">
       <img alt="LangChain" src="https://img.shields.io/badge/LangChain-1C3C3C?style=flat-square&amp;logo=langchain&amp;logoColor=white">
       <img alt="Claude" src="https://img.shields.io/badge/Claude-D97757?style=flat-square&amp;logo=claude&amp;logoColor=white">
-      <img alt="Amazon Bedrock and OpenAI models" src="https://img.shields.io/badge/Bedrock%20%C2%B7%20OpenAI-232F3E?style=flat-square&amp;logo=amazonwebservices&amp;logoColor=white">
+      <img alt="Amazon Bedrock and OpenAI models" src="https://img.shields.io/badge/Bedrock%20%C2%B7%20OpenAI-232F3E?style=flat-square&amp;logoColor=white&amp;logo=data:image/svg%2Bxml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZD0iTTcgMThhNCA0IDAgMCAxLS42LTcuOTZBNS41IDUuNSAwIDAgMSAxNyA5YTQuNSA0LjUgMCAwIDEgLjUgOUg3WiIvPjxwYXRoIGQ9Ik0xOC41IDJsLjkgMi4zIDIuMy45LTIuMy45LS45IDIuMy0uOS0yLjMtMi4zLS45IDIuMy0uOVoiLz48L3N2Zz4=">
       <img alt="Agents and MCP" src="https://img.shields.io/badge/Agents%20%C2%B7%20MCP-C1121F?style=flat-square&amp;logo=modelcontextprotocol&amp;logoColor=white">
     </td>
   </tr>

@@ -81,8 +81,15 @@ Mac notes: the Menlo proxy breaks Python TLS, so run `fetch.py` without a token 
 - Towers are small on phones (26 land weeks in ~350 px) in the 3D Front view.
 - `og:image` is an SVG, which some social platforms will not render; a PNG social card is a
   follow-up.
-- shields.io logo slugs for the Third Sword badges depend on simple-icons; a missing logo
-  degrades to a text badge.
+- shields.io has no AWS or OpenAI logos (brand icons were removed from simple-icons), so the
+  "Bedrock · OpenAI" badge embeds an original cloud-and-spark logo as a base64 `logo=` value.
+- Oct 28 live audit fixes: `fetch.py` creates `data/` before saving the avatar (CI has no
+  `data/` directory, so the first published poster fell back to the straw-hat portrait); the
+  battlefield HUD tightens its type when the column text grows; the highlighted streak is
+  always the longest one (a short live streak used to replace the record and collide with the
+  peak label); the streak label steps clear of the peak pennant.
+- GitHub runs the 03:17 UTC cron late under load (observed 09:00–09:45 UTC); the data is still
+  refreshed daily.
 - The workflow has never been run; CI uses Python 3.12 and the local system is 3.9.
 
 ## Guardrails

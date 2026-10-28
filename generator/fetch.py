@@ -75,6 +75,7 @@ def graphql() -> dict:
 def download_avatar(url: str) -> bool:
     """Save the avatar so cards can embed it (SVGs in <img> can't load URLs)."""
     target = ROOT / "data" / "avatar.png"
+    target.parent.mkdir(parents=True, exist_ok=True)  # data/ is not in git; CI starts without it
     try:
         with urllib.request.urlopen(url, timeout=30) as resp:
             target.write_bytes(resp.read())
