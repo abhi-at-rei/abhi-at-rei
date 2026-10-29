@@ -289,7 +289,7 @@ def fragment_errors(references: list[str], known: set[str]) -> list[str]:
     ]
 
 
-SITE_STAGED = re.compile(r"(?:\./)?(?:battlefield-(?:light|dark)\.svg|stats\.json)$")
+SITE_STAGED = re.compile(r"(?:\./)?(?:battlefield-(?:light|dark)\.svg|stats\.json|card\.png)$")
 SITE_ESCAPE = re.compile(r"\.\./(?:dist|assets|data)/")
 
 

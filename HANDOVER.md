@@ -79,8 +79,11 @@ Mac notes: the Menlo proxy breaks Python TLS, so run `fetch.py` without a token 
 - The browser pixel policy catches catastrophic black/blank frames only.
 - On phones the battlefield SVG's HUD text is tiny; the native README text carries the numbers.
 - Towers are small on phones (26 land weeks in ~350 px) in the 3D Front view.
-- `og:image` is an SVG, which some social platforms will not render; a PNG social card is a
-  follow-up.
+- Social card: CI screenshots the light battlefield on a title strip with headless Chromium
+  (`scripts/render_card.py`, Playwright installed only in that step) and stages
+  `site/card.png` (1200×630), which `og:image`/`twitter:image` name. Locally the script exits 2
+  without Playwright; the scratch venv can run it. Linux CI has no SF fonts, so the strip and
+  HUD fall back to the stack's generic fonts there.
 - shields.io has no AWS or OpenAI logos (brand icons were removed from simple-icons), so the
   "Bedrock · OpenAI" badge embeds an original cloud-and-spark logo as a base64 `logo=` value.
 - Oct 28 live audit fixes: `fetch.py` creates `data/` before saving the avatar (CI has no

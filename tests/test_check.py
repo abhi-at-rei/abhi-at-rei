@@ -359,3 +359,16 @@ class WorkflowTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SocialCardTests(unittest.TestCase):
+    def test_card_html_embeds_the_svg_and_identity(self) -> None:
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+        import render_card
+
+        page = render_card.card_html(b"<svg xmlns='http://www.w3.org/2000/svg'/>")
+        self.assertIn("data:image/svg+xml;base64,", page)
+        self.assertIn("Abhishek Vishwakarma", page)
+        self.assertIn("abhi-at-rei.github.io/abhi-at-rei", page)
+        self.assertIn(f"width: {render_card.W}px; height: {render_card.H}px", page)
+        self.assertEqual((render_card.W, render_card.H), (1200, 630))

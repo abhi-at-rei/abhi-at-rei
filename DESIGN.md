@@ -61,7 +61,8 @@ The section ribbons (`assets/arc-*.svg`) are no longer used; Markdown headings d
 page. `assets/` holds static art, committed to `main`. `dist/` holds data-driven art: CI
 rebuilds it daily and publishes it to the `output` branch, which the README loads from
 `raw.githubusercontent.com/abhi-at-rei/abhi-at-rei/output/…`. CI also stages
-`dist/battlefield-*.svg` and `data/stats.json` inside `site/` before uploading Pages.
+`dist/battlefield-*.svg` and `data/stats.json` inside `site/` before uploading Pages, and
+renders the 1200×630 social card `site/card.png` from the light battlefield.
 
 ## Rules the user has set (all confirmed in conversation)
 

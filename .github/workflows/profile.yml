@@ -52,6 +52,14 @@ jobs:
           cp data/stats.json site/stats.json
           cp dist/battlefield-light.svg dist/battlefield-dark.svg site/
 
+      # Link previews cannot render SVG, so the card is a PNG screenshot of the light
+      # battlefield (site/card.png, named by og:image). Playwright is used only here.
+      - name: Render social card
+        run: |
+          pip install --quiet playwright
+          python -m playwright install --with-deps chromium
+          python scripts/render_card.py
+
       - name: Verify renderers and aggregate calculations
         run: python -m unittest discover -s tests -p 'test_*.py'
 
