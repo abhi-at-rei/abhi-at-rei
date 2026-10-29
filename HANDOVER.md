@@ -88,6 +88,12 @@ Mac notes: the Menlo proxy breaks Python TLS, so run `fetch.py` without a token 
   battlefield HUD tightens its type when the column text grows; the highlighted streak is
   always the longest one (a short live streak used to replace the record and collide with the
   peak label); the streak label steps clear of the peak pennant.
+- Oct 29 future-proofing: the battlefield keeps a five-week harbour margin once the join week
+  has aged out of the 53-week window (from May 2027), so the ship, lighthouse and sun path
+  survive; leading empty months get no row of zero pills (README art and War Room); the
+  "active days since <join>" label falls back to "in the last year" when the join date is
+  outside the window. Verified by rendering synthetic stats (join 2024, window ending Nov 1
+  and Jan 1) and by loading the War Room with a no-sea stats.json: no console errors.
 - GitHub runs the 03:17 UTC cron late under load (observed 09:00–09:45 UTC); the data is still
   refreshed daily.
 - The workflow has never been run; CI uses Python 3.12 and the local system is 3.9.

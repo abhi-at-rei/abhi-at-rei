@@ -264,9 +264,19 @@ def render_battlefield(stats: dict, mode: str) -> str:
     n = max(1, len(weeks))
     joined = stats.get("joined") or ""
     s = _summary(stats)
-    col_w = COL_W * 53 / n
+    is_sea0 = lambda d: bool(joined) and d["date"] < joined  # noqa: E731
+    coast0 = 0
+    for w in weeks:
+        if w and all(is_sea0(d) for d in w):
+            coast0 += 1
+        else:
+            break
+    # A harbour margin: once the join week has aged out of the window there is no sea left,
+    # so keep a few virtual sea weeks on the left for the ship, lighthouse and sun path.
+    pad = max(0, 5 - coast0)
+    col_w = COL_W * 53 / (n + pad)
     cx = W / 2
-    xc = n / 2
+    xc = (n + pad) / 2
 
     def sc(z: float) -> float:
         return FOCAL / (FOCAL + z)
@@ -275,10 +285,10 @@ def render_battlefield(stats: dict, mode: str) -> str:
 
     def P(x: float, z: float, h: float = 0.0):
         k = sc(z)
-        return (cx + (x - xc) * col_w * k, vy + (Y_FRONT - vy) * k - h * k)
+        return (cx + (x + pad - xc) * col_w * k, vy + (Y_FRONT - vy) * k - h * k)
 
     def wx(sx_: float, z: float) -> float:  # screen x back to world x at depth z
-        return xc + (sx_ - cx) / (col_w * sc(z))
+        return xc - pad + (sx_ - cx) / (col_w * sc(z))
 
     days = [(i, d) for i, w in enumerate(weeks) for d in w]
     max_count = max([d["count"] for _, d in days] + [1])
@@ -444,7 +454,8 @@ def render_battlefield(stats: dict, mode: str) -> str:
     a(f'<rect width="{W}" height="{_f(hy)}" fill="url(#skyv)"/>')
 
     # ---- far plane: sun on the left, red moon, skyline, clouds, crows and rain on the right
-    sun_x = P(min(coast, n / 2) * 0.45 if coast else n * 0.18, 7)[0]
+    cz = coast + pad  # sea weeks on screen, real plus virtual
+    sun_x = P(min(cz, (n + pad) / 2) * 0.45 - pad, 7)[0]
     sun_y = hy - 14
     a(_sun(sun_x, sun_y, hy, dark))
     a(_moon(790, hy - 92, dark))
@@ -501,16 +512,16 @@ def render_battlefield(stats: dict, mode: str) -> str:
         a("<g>" + "".join(tiles) + "</g>")
 
     # ---- sea story: the lighthouse at the coast and the ship sailing toward it
-    if coast >= 2:
+    if cz >= 2:
         lhx, lhy = P(coast - .55, 6.35)
         a(_lighthouse(lhx, lhy, sc(6.35) * 1.18, dark))
-    if coast >= 4:
+    if cz >= 4:
         sun_week = wx(sun_x, 7)
-        bx, by = P(min(coast - 4.6, sun_week + 7.4), 2.2)
+        bx, by = P(max(min(coast - 4.6, sun_week + 7.4), 1.6 - pad), 2.2)  # keep the hull inside the frame
         a(_boat(bx, by, dark))
 
     # ---- towers: rows back to front, columns from the edges toward the centre
-    center = int(xc)
+    center = n // 2  # the land's middle week; xc also counts the harbour margin
     order = list(range(0, center)) + list(range(n - 1, center - 1, -1))
     tops = {}  # date -> top-centre point, for the streak bridge and the peak pennant
     for wd in range(7):
@@ -904,11 +915,14 @@ def _month_totals(weeks, monthly: dict, coast: int, joined: str, P, m: dict, ram
             lo, hi = spans.get(key, [frac, frac])
             spans[key] = [min(lo, frac), max(hi, frac)]
     jm = joined[:7] if joined else ""
+    first_active = min((k for k in spans if int(monthly.get(k) or 0) > 0), default="")
     out = []
     y = MONTH_Y
     for key in sorted(spans):
         if jm and key < jm:
             continue
+        if first_active and key < first_active:
+            continue  # leading silence: no row of zeros before the first active month
         lo, hi = spans[key]
         x0, x1 = P(lo - .5 / 7, zmid)[0] + 2, P(hi + .5 / 7, zmid)[0] - 2
         if x1 - x0 < 30:
@@ -974,7 +988,8 @@ def _hud(s: dict, m: dict, ramp: list) -> str:
         )
     mo = s["momentum"]
     cols = [
-        (f"{s['active']:,}", "active days", f"since {_md(s['joined'])}" if s["joined"] else "in the last year"),
+        (f"{s['active']:,}", "active days",
+         f"since {_md(s['joined'])}" if s["joined"] and s["first"] and s["joined"] >= s["first"] else "in the last year"),
         (f"{s['best']['count']:,}" if s["best"] else "–", "peak day",
          _md(s["best"]["date"]) if s["best"] else "no activity yet"),
         (s["busiest"] or "–", "busiest weekday",

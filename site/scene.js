@@ -1337,6 +1337,7 @@ export function createScene(opts) {
     }
     addLabel('mk--front mk--below', '<b>Now</b>', new THREE.Vector3(frontX, -0.3, boardZ1 + 0.4), { from: N - 1, rank: 0 });
     const fmtNum = new Intl.NumberFormat('en-US');
+    const firstActive = monthList.findIndex((m) => m.total > 0);
     monthList.forEach((m, k) => {
       let w0 = Infinity;
       let w1 = -Infinity;
@@ -1353,7 +1354,7 @@ export function createScene(opts) {
       if (!Number.isFinite(w0)) return;
       addLabel('mk--month mk--below', `<b>${m.label}</b>${fmtNum.format(m.total)}`,
         new THREE.Vector3((xOf(w0) + xOf(w1)) / 2, -0.3, boardZ1 + 0.35),
-        { from: i0, quiet: seaOnly && !(m.total > 0), rank: k === monthList.length - 1 ? 1 : 2 + k });
+        { from: i0, quiet: (seaOnly || k < firstActive) && !(m.total > 0), rank: k === monthList.length - 1 ? 1 : 2 + k });
     });
     const v3 = new THREE.Vector3();
     const placed = [];
