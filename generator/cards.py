@@ -864,22 +864,81 @@ RING_WORDS = {
 }
 
 
-def _load_achievements() -> list:
+def _slugify(text: str) -> str:
+    return "-".join("".join(c if c.isalnum() else " " for c in str(text).lower()).split())
+
+
+def _read_achievement_file() -> dict:
     try:
         data = json.loads((HERE / "achievements.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return []
-    items = data.get("achievements") if isinstance(data, dict) else data
-    return [a for a in (items or []) if isinstance(a, dict) and a.get("name")]
+        return {}
+    return data if isinstance(data, dict) else {"achievements": data}
 
 
-def _ring_word(name: str) -> str:
+def _catalog() -> dict:
+    """Known achievements keyed by GitHub slug (id), plus a name-slug alias."""
+    out: dict = {}
+    for e in _read_achievement_file().get("catalog") or []:
+        if isinstance(e, dict) and e.get("id"):
+            out[_slugify(e["id"])] = e
+            if e.get("name"):
+                out.setdefault(_slugify(e["name"]), e)
+    return out
+
+
+def _lookup(cat: dict, slug: object, name: str):
+    return cat.get(_slugify(slug or "")) or cat.get(_slugify(name))
+
+
+def _ring_word(name: str, known: object = None) -> str:
+    if isinstance(known, dict) and known.get("word"):
+        return str(known["word"]).upper()[:6]
     key = name.strip().lower()
     for k, v in RING_WORDS.items():
         if key == k or key.startswith(k):
             return v
-    word = (name.strip().split() or ["?"])[0].upper()
+    words = [w for w in "".join(c if c.isalnum() else " " for c in name).split()]
+    if not words:
+        return "?"
+    word = words[0].upper()
+    if len(word) < 3 and len(words) > 1:
+        word = "".join(w[0] for w in words).upper()
     return word[:6]
+
+
+def _seal_items(stats: dict) -> list:
+    """Rings to draw: live scrape (achievements, then highlights) else achievements.json.
+
+    Each item is {"name", "tier", "meaning", "word"}; at most 10.
+    """
+    cat = _catalog()
+    live = stats.get("achievements") if isinstance(stats, dict) else None
+    raw: list = []
+    if isinstance(live, list) and any(isinstance(a, dict) and a.get("name") for a in live):
+        raw = [a for a in live if isinstance(a, dict) and a.get("name")]
+        for h in (stats.get("highlights") or []):
+            if isinstance(h, str) and h.strip():
+                raw.append({"name": h.strip(), "tier": 1})
+    else:
+        raw = [a for a in (_read_achievement_file().get("achievements") or [])
+               if isinstance(a, dict) and a.get("name")]
+    items, seen = [], set()
+    for a in raw:
+        name = str(a["name"]).strip()
+        key = _slugify(a.get("slug") or a.get("id") or name)
+        if not name or key in seen:
+            continue
+        seen.add(key)
+        known = _lookup(cat, a.get("slug") or a.get("id"), name)
+        meaning = str((known or {}).get("meaning") or a.get("meaning") or "Unlocked on GitHub")
+        items.append({"name": name, "tier": max(1, _int(a.get("tier"), 1)), "meaning": meaning,
+                      "word": _ring_word(name, known)})
+    return items[:10]
+
+
+# GitHub's own tier label colours: x2 bronze, x3 silver, x4 gold.
+TIER_FILL = {2: "#F9BFA7", 3: "#E1E4E4", 4: "#FAE57E"}
 
 
 def _spikes(cx: float, cy: float, r0: float, r1: float, n: int, seed: int) -> str:
@@ -904,9 +963,12 @@ def _arc(cx: float, cy: float, r: float, a0: float, a1: float) -> str:
 def render_seals(stats: dict, mode: str) -> str:
     mode = _mode(mode)
     m = MODES[mode]
-    W, H = 840, 230
-    items = _load_achievements()
+    W = 840
+    items = _seal_items(stats)
     n = len(items)
+    ROW_PITCH = 190
+    rows = 1 if n <= 6 else 2
+    H = 230 + (rows - 1) * ROW_PITCH
 
     css = (
         ".sheen{transform-box:fill-box;transform-origin:50% 50%;animation:spin 10s linear infinite;}"
@@ -946,16 +1008,29 @@ def render_seals(stats: dict, mode: str) -> str:
     ]
 
     left, right = 132, 700
-    if n > 1:
-        xs = [left + (right - left) * i / (n - 1) for i in range(n)]
-        slot = (right - left) / (n - 1)
+    cy0 = 94
+    # Up to 6 rings sit in one row; 7-10 split into two centred rows of equal ring size.
+    k1 = n if rows == 1 else (n + 1) // 2
+    if k1 > 1:
+        slot = (right - left) / (k1 - 1)
     else:
-        xs = [W / 2]
         slot = 300.0
+    pos = []  # (cx, cy) per item
+    for i in range(n):
+        r_ = 0 if i < k1 else 1
+        cnt = k1 if r_ == 0 else n - k1
+        if rows == 1 and n > 1:
+            cx_ = left + (right - left) * i / (n - 1)
+        elif n == 1:
+            cx_ = W / 2
+        else:
+            idx = i if r_ == 0 else i - k1
+            cx_ = (left + right) / 2 + (idx - (cnt - 1) / 2) * slot
+        pos.append((cx_, cy0 + r_ * ROW_PITCH))
     R = min(44.0, slot * 0.31)
     r_in = R * 0.7
-    cy = 94
     maxw = min(slot - 8, 170)
+    cy = cy0
 
     body = [
         f'<rect x="0.5" y="0.5" width="{W - 1}" height="{H - 1}" rx="16" fill="url(#bg)" '
@@ -963,18 +1038,20 @@ def render_seals(stats: dict, mode: str) -> str:
         f'<text x="{W / 2}" y="25" text-anchor="middle" font-family="{FONT_BODY}" font-size="13" '
         f'font-weight="bold" letter-spacing="3" fill="{m["text_muted"]}">ACHIEVEMENTS UNLOCKED</text>',
     ]
-    if n > 1:
-        body.append(f'<path d="M{xs[0]},{cy} H{xs[-1]}" stroke="url(#chain)" stroke-width="2" '
-                    f'stroke-dasharray="2 7" stroke-linecap="round" opacity="0.7"/>')
+    for r_ in range(rows):
+        row = [p for p in pos if p[1] == cy0 + r_ * ROW_PITCH]
+        if len(row) > 1:
+            body.append(f'<path d="M{_f(row[0][0])},{row[0][1]} H{_f(row[-1][0])}" stroke="url(#chain)" '
+                        f'stroke-width="2" stroke-dasharray="2 7" stroke-linecap="round" opacity="0.7"/>')
     body.append(f'<g class="bob">{straw_hat(48, cy + 2, 1.15)}</g>')
     body.append(f'<g class="bob" style="animation-delay:-3s">'
                 f'{red_cloud(W - 84, cy - 17, 64, 1, edge=AK["cloud_edge"])}</g>')
 
     for i, a in enumerate(items):
-        cx = xs[i]
-        name = str(a.get("name"))
-        tier = _int(a.get("tier"), 1)
-        meaning = str(a.get("meaning") or "")
+        cx, cy = pos[i]
+        name = a["name"]
+        tier = a["tier"]
+        meaning = a["meaning"]
         straw = i % 2 == 0
         aura_key = "gold" if straw else ("crimson" if (i // 2) % 2 == 0 else "purple")
         metal = metals["gold" if straw else "steel"]
@@ -1003,7 +1080,7 @@ def render_seals(stats: dict, mode: str) -> str:
                    f"M{_f(cx - r_in)},{cy} a{_f(r_in)},{_f(r_in)} 0 1 1 {_f(2 * r_in)},0 "
                    f"a{_f(r_in)},{_f(r_in)} 0 1 1 {_f(-2 * r_in)},0 Z")
         mid = (R + r_in) / 2
-        word = _ring_word(name)
+        word = a["word"]
         wfs = min(r_in * 0.72, (2 * r_in - 9) / max(1, len(word) * 0.54))
         engrave = "#FFFFFF" if straw else "#000000"
         g = [
@@ -1032,30 +1109,22 @@ def render_seals(stats: dict, mode: str) -> str:
         ]
         body.append("".join(g))
 
+        # tier badge sits on the ring's lower-right edge, like GitHub's own profile
+        if tier > 1:
+            pill = TIER_FILL.get(min(tier, 4), TIER_FILL[4])
+            bx, by = cx + R * 0.78, cy + R * 0.78
+            body.append(f'<rect x="{_f(bx - 15)}" y="{_f(by - 9)}" width="30" height="18" rx="9" '
+                        f'fill="{pill}" stroke="#000" stroke-opacity="0.35" stroke-width="1"/>'
+                        f'<text x="{_f(bx)}" y="{_f(by + 4.5)}" text-anchor="middle" '
+                        f'font-family="{FONT_BODY}" font-size="13" font-weight="bold" fill="#1F2328">'
+                        f'{esc("×" + str(tier))}</text>')
+
         # label
         name_fs = 14.0
-        badge = f"×{tier}" if tier > 1 else ""
-        bw_ = 30 if badge else 0
-        nlines = wrap(name, maxw - (bw_ + 6 if badge else 0), name_fs, 0.47)
         y = cy + R + 27
-        for j, line in enumerate(nlines):
-            lastline = j == len(nlines) - 1
-            if lastline and badge:
-                tw = est_w(line, name_fs, 0.47)
-                x0 = cx - (tw + 6 + bw_) / 2
-                body.append(f'<text x="{_f(x0)}" y="{_f(y)}" font-family="{FONT_BODY}" font-size="{name_fs}" '
-                            f'font-weight="bold" fill="{m["text"]}">{esc(line)}</text>')
-                px = x0 + tw + 6
-                pill = a1 if not straw else SH["sun_gold"]
-                pill_t = SH["haki_black"] if straw else "#FFFFFF"
-                body.append(f'<rect x="{_f(px)}" y="{_f(y - 13.5)}" width="{bw_}" height="18" rx="9" '
-                            f'fill="{pill}"/>'
-                            f'<text x="{_f(px + bw_ / 2)}" y="{_f(y)}" text-anchor="middle" '
-                            f'font-family="{FONT_BODY}" font-size="13" font-weight="bold" fill="{pill_t}">'
-                            f'{esc(badge)}</text>')
-            else:
-                body.append(f'<text x="{_f(cx)}" y="{_f(y)}" text-anchor="middle" font-family="{FONT_BODY}" '
-                            f'font-size="{name_fs}" font-weight="bold" fill="{m["text"]}">{esc(line)}</text>')
+        for line in wrap(name, maxw, name_fs, 0.5):
+            body.append(f'<text x="{_f(cx)}" y="{_f(y)}" text-anchor="middle" font-family="{FONT_BODY}" '
+                        f'font-size="{name_fs}" font-weight="bold" fill="{m["text"]}">{esc(line)}</text>')
             y += 17
         y += 1
         for line in wrap(meaning, maxw, 13, 0.52)[:2]:
@@ -1069,7 +1138,7 @@ def render_seals(stats: dict, mode: str) -> str:
 
     defs.append("</defs>")
     desc = ("GitHub achievements shown as metal rings with Haki auras: "
-            + "; ".join(f"{a.get('name')}{' x' + str(_int(a.get('tier'), 1)) if _int(a.get('tier'), 1) > 1 else ''}"
-                        f" ({a.get('meaning', '')})" for a in items)
+            + "; ".join(f"{a['name']}{' x' + str(a['tier']) if a['tier'] > 1 else ''} ({a['meaning']})"
+                        for a in items)
             + "." if items else "No achievements yet.")
     return _svg(W, H, "Rings & Haki: GitHub achievements", desc, "".join(defs) + "".join(body), css)

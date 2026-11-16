@@ -15,6 +15,10 @@ from preview import RAW_OUTPUT, offline_markdown
 
 ROOT = Path(__file__).resolve().parent.parent
 MAX_SVG_BYTES = 250000
+MAX_ORBIT_BYTES = 2_500_000
+# Recorded in CI by scripts/record_orbit.py after check.py has run, so the README may name them
+# before the files exist locally; once dist/orbit-*.webp exist they are validated like any output.
+CI_RECORDED = {f"orbit-{mode}.webp" for mode in ("light", "dark")}
 # The crew name is banned; the singular "straw hat" is an allowed prop (DESIGN.md).
 BANNED = re.compile(r"(?<!\w)(?:Straw\s+Hats|Straw\s+Hat\s+(?:Pirates|crew)|Akatsuki|versus|vs\.?|threats?|dead\s+or\s+alive|Agentic)(?!\w)", re.I)
 BANNED_POSTER = re.compile(r"(?<!\w)WANTED(?!\w)")
@@ -25,7 +29,7 @@ STATS_KEYS = {
     "login", "name", "bio", "location", "joined", "followers", "public_repos",
     "generated_at", "range", "totals", "streak", "active_days", "days_since_join",
     "active_rate_since_join", "best_day", "weekday_totals", "busiest_weekday",
-    "monthly", "weeks", "avatar",
+    "monthly", "weeks", "avatar", "achievements", "highlights",
 }
 TOTAL_KEYS = {"contributions", "commits", "pull_requests", "reviews", "issues", "repos_created", "private", "public"}
 DAY_KEYS = {"date", "count", "level", "weekday"}
@@ -231,14 +235,47 @@ def build_outputs(root: Path) -> set[str]:
     return set()
 
 
+def webp_chunks(payload: bytes) -> list[tuple[bytes, bytes]]:
+    """(fourcc, data) for each top-level chunk of a RIFF/WEBP container; ValueError if it is not one."""
+    if len(payload) < 12 or payload[:4] != b"RIFF" or payload[8:12] != b"WEBP":
+        raise ValueError("not a WebP file")
+    chunks = []
+    offset = 12
+    while offset + 8 <= len(payload):
+        size = int.from_bytes(payload[offset + 4:offset + 8], "little")
+        chunks.append((payload[offset:offset + 4], payload[offset + 8:offset + 8 + size]))
+        offset += 8 + size + (size & 1)
+    return chunks
+
+
+def orbit_errors(payload: bytes, limit: int = MAX_ORBIT_BYTES) -> list[str]:
+    """The README's 3D preview must be an animated WebP of at most 2.5 MB."""
+    errors = []
+    if len(payload) > limit:
+        errors.append(f"size {len(payload)} bytes exceeds {limit}")
+    try:
+        chunks = webp_chunks(payload)
+    except ValueError:
+        return errors + ["not a WebP file"]
+    kinds = [kind for kind, _ in chunks]
+    header = next((data for kind, data in chunks if kind == b"VP8X"), b"")
+    if not header or not header[0] & 0x02 or b"ANIM" not in kinds:
+        errors.append("WebP is not animated (needs a VP8X animation flag and an ANIM chunk)")
+    elif kinds.count(b"ANMF") < 2:
+        errors.append("animated WebP needs at least two frames")
+    return errors
+
+
 def readme_reference_errors(references: list[str], root: Path) -> list[str]:
     errors = []
     outputs = build_outputs(root)
     for reference in sorted(set(references)):
         if reference.startswith(RAW_OUTPUT):
             relative = unquote(urlsplit(reference[len(RAW_OUTPUT):]).path)
-            if relative not in outputs:
+            if relative not in outputs | CI_RECORDED:
                 errors.append("remote output reference does not name a known build output")
+            elif relative in CI_RECORDED:
+                continue
             elif not (root / "dist" / relative).is_file():
                 errors.append(f"missing build output: dist/{relative}")
             continue
@@ -332,6 +369,19 @@ def check_stats(path: Path) -> list[str]:
         elif any(not isinstance(day, dict) or set(day) - DAY_KEYS for week in weeks for day in week):
             errors.append("each day must be an object with only permitted keys")
 
+    if "achievements" in stats:
+        items = stats["achievements"]
+        if not isinstance(items, list) or any(
+            not isinstance(item, dict) or set(item) != {"name", "slug", "tier"}
+            or not isinstance(item["name"], str) or not isinstance(item["slug"], str)
+            or isinstance(item["tier"], bool) or not isinstance(item["tier"], int) or item["tier"] < 1
+            for item in items
+        ):
+            errors.append("achievements must be a list of {name: str, slug: str, tier: int >= 1}")
+    if "highlights" in stats:
+        if not isinstance(stats["highlights"], list) or any(not isinstance(item, str) for item in stats["highlights"]):
+            errors.append("highlights must be a list of strings")
+
     def forbidden(value: object) -> bool:
         if isinstance(value, dict):
             return any(str(key).lower() in PRIVATE_KEYS or forbidden(child) for key, child in value.items())
@@ -354,6 +404,15 @@ def run(root: Path) -> int:
             results.append((path.relative_to(root), check_svg(path)))
         except OSError:
             results.append((path.relative_to(root), ["unable to read SVG"]))
+    orbit_paths = sorted(root.glob("dist/orbit-*.webp"))
+    for path in orbit_paths:
+        try:
+            results.append((path.relative_to(root), orbit_errors(path.read_bytes())))
+        except OSError:
+            results.append((path.relative_to(root), ["unable to read WebP"]))
+    for name in sorted(CI_RECORDED):
+        if not (root / "dist" / name).exists():
+            print(f"SKIP dist/{name}: recorded in CI by scripts/record_orbit.py")
     readme = root / "README.md"
     try:
         markdown = readme.read_text(encoding="utf-8")

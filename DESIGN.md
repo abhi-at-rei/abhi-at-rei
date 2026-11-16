@@ -47,12 +47,14 @@ counts are activity, not an engineering-quality score. No project outcomes are i
 | 0 | **Hero banner.** Scenery only, name in the centre, "Engineering Atlas" eyebrow | `assets/banner-{mode}.svg`, 840×370 | `generator/art_banner.py` |
 | 0b | **Field-note caption.** Editorial paper strip with a compass mark and a typewriter cycling four lines (gold caret for the sunlit lines, crimson for the storm lines) | `assets/caption-{mode}.svg`, 840×70 | `generator/art_caption.py` |
 | — | **Intro** (native Markdown): "AI Expert · developing solutions since 2016 · AI Engineer at REI Systems", location and tagline, current focus, links row | README | README |
-| 1 | **Contribution world.** Straight-on 3D harbor: open water before the join date (sun path, ship, lighthouse), then one tower per day; HUD with total, active days, peak, busiest weekday, streak and labelled momentum. Links to the War Room | `dist/battlefield-{mode}.svg`, 840×690 | `generator/battlefield.py` |
+| 0c | **This week.** Seven mini bars for the last seven days, today's count, the live (or longest) streak, and this week over the week before | `dist/week-{mode}.svg`, 840×150 | `generator/week.py` |
+| 1 | **Contribution world.** Straight-on 3D harbor: open water before the join date (sun path, ship, lighthouse), then one tower per day; HUD with total, active days, peak, busiest weekday, streak and labelled momentum; the current month always has a bracket. Gentle CSS motion (drifting clouds, lighthouse beam, ship bob, twinkling night windows, today's tower glow) with a complete frame 0. Links to the War Room | `dist/battlefield-{mode}.svg`, 840×690 | `generator/battlefield.py` |
+| 1a | **Fly-through.** A 6-second looping flight around the 3D War Room, recorded daily in CI; linked to the War Room | `dist/orbit-{mode}.webp`, 840×420, ≤ 2.5 MB | `scripts/record_orbit.py` |
 | 1b | **Gomu Gomu snake** eating the calendar, straw-hat head, no face | `dist/snake-{mode}.svg`, 840×214 | `generator/snake.py` |
 | — | **"The numbers, with context"** privacy paragraph, then **What I build** (three native sub-sections) | README | README |
 | 2 | **Collectibles.** Most Valued poster and Field Dossier side by side in a 2-cell table, with a one-line native caption | `dist/wanted-{mode}.svg` and `dist/bingo-{mode}.svg` | `generator/cards.py` |
 | 3 | **Toolkit.** Three-sword table (skillicons.dev and shields.io) plus a native text list | README HTML | README |
-| 4 | **Achievements.** Achievement rings plus the native line | `dist/seals-{mode}.svg`, 840×230 | `generator/cards.py` |
+| 4 | **Achievements.** Rings read daily from the profile's Achievements tab (fallback: `generator/achievements.json`), one row up to six, two rows beyond; native line links to the tab | `dist/seals-{mode}.svg`, 840×230 or 840×420 | `generator/cards.py`, `generator/fetch.py` |
 | 5 | **The route so far.** Career line and the "About this atlas" details | README Markdown | README |
 | 6 | **Footer:** "To be continued…" | `assets/footer-{mode}.svg` | `generator/art_footer.py` |
 | — | **War Room**, the interactive 3D page on GitHub Pages | `site/` (Three.js 0.170.0 from jsDelivr) | hand-written JS |
@@ -139,9 +141,14 @@ busiest weekday. Don't lead with the near-zero public PR or commit counts.
   2. Copy `dist/battlefield-*.svg` and `data/stats.json` into `site/` (CI does the same).
   3. Serve the repo root (on this Mac, serve a copy outside `~/Documents`; see HANDOVER.md).
   4. Open `/.preview/index.html`, which has a Light/Dark switch. The War Room is at `/site/`.
-- **War Room UI:** Front is the default preset; touch exploration is opt-in ("Explore in 3D");
-  on phones no text is below 12 px and every primary control is at least 44 px tall;
-  reduced motion disables continuous animation and replaces Play with "Step one week".
+- **War Room UI:** the 3D stage is a sticky full-bleed hero (name, role, headline and metric
+  chips over the sky; controls docked at the bottom). Front is the default preset; touch
+  exploration is opt-in ("Explore in 3D"); a plain mouse wheel always scrolls the page (zoom
+  needs Ctrl/⌘). The theme switch animates day to night without rebuilding the scene. The
+  voyage below the stage tells the year in chapters from `buildChapters`. On phones no text is
+  below 12 px and every primary control is at least 44 px tall. Reduced motion disables
+  continuous animation, the arrival and scroll-scrubbed camera moves. API and page structure:
+  `ROADMAP.md`, "Build contract".
 - **Local-only guardrail:** do not create a repository, commit, push, enable Pages, or
   publish without separate approval. Existing deployment configuration is not permission
   to deploy.

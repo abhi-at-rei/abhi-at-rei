@@ -27,7 +27,8 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # The orbit recording renders ~150 software-WebGL frames, so the job gets room beyond the old 15 minutes.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
 
@@ -52,19 +53,49 @@ jobs:
           cp data/stats.json site/stats.json
           cp dist/battlefield-light.svg dist/battlefield-dark.svg site/
 
-      # Link previews cannot render SVG, so the card is a PNG screenshot of the light
-      # battlefield (site/card.png, named by og:image). Playwright is used only here.
-      - name: Render social card
-        run: |
-          pip install --quiet playwright
-          python -m playwright install --with-deps chromium
-          python scripts/render_card.py
-
       - name: Verify renderers and aggregate calculations
         run: python -m unittest discover -s tests -p 'test_*.py'
 
       - name: Check profile artifacts
         run: python scripts/check.py
+
+      # Playwright and Pillow are needed only by the card and the orbit recording, so they are
+      # installed once here, after the tests and checks that do not use them.
+      - name: Install Playwright and Pillow
+        run: |
+          pip install --quiet playwright pillow
+          python -m playwright install --with-deps chromium
+
+      # Link previews cannot render SVG, so the card is a PNG screenshot of the light
+      # battlefield (site/card.png, named by og:image).
+      - name: Render social card
+        run: python scripts/render_card.py
+
+      # The README's 3D preview: dist/orbit-{light,dark}.webp, published below with the SVGs.
+      # Best effort, so a rendering hiccup can never block the daily data refresh:
+      #  1. keep_history is false, so the output branch is rebuilt from dist/ alone; the previous
+      #     recordings are therefore copied back into dist/ first (a failed download is ignored).
+      #  2. record_orbit.py writes each file atomically only after validating it, so a failed run
+      #     leaves the restored files untouched.
+      #  3. continue-on-error lets the job go on to publish whatever dist/ holds.
+      - name: Restore previous orbit recordings
+        continue-on-error: true
+        run: |
+          for mode in light dark; do
+            curl -fsSL --retry 2 --max-time 60 -o "dist/orbit-$mode.webp" \
+              "https://raw.githubusercontent.com/${{ github.repository }}/output/orbit-$mode.webp" \
+              || rm -f "dist/orbit-$mode.webp"
+          done
+
+      - name: Record orbit preview
+        id: orbit
+        continue-on-error: true
+        timeout-minutes: 12
+        run: python scripts/record_orbit.py
+
+      - name: Report orbit result
+        if: steps.orbit.outcome == 'failure'
+        run: echo "::warning title=Orbit preview::Recording failed; publishing the previous orbit-*.webp (if any) unchanged."
 
       - name: Publish to output branch
         uses: crazy-max/ghaction-github-pages@v5

@@ -27,9 +27,18 @@ Interactivity (when the SVG is opened directly): every day is a <g> with a
 GitHub-style <title> tooltip and a subtle optional hover lift.
 
 The complete scene is visible at frame zero. Ambient motion only touches
-transform and opacity: a boat bob, drifting wave crests, twinkling glitter,
-a breathing sun and lighthouse beam, drifting clouds, crows and rain.
-Reduced motion disables all animation.
+transform and opacity, all on the one CSS clock (no SMIL): the ship bobs and
+rolls, wave crests drift, glitter twinkles, the sun breathes, the lighthouse
+beam sweeps round (the lamp flares as it faces the viewer), clouds drift on two
+parallax layers (far cirrus wisps and near red clouds), crows fly, rain falls,
+lit skyline windows twinkle in the dark theme, and today's tower breathes a soft
+glow in time with the current month's "now" bead. Effects that are not part of
+the still (the lamp flare, today's glow) start fully transparent, so frame 0 is
+the reduced-motion picture. Reduced motion disables all animation.
+
+The current month always has a total in the month row, however few days old;
+when its bracket is narrow the label hangs from the bracket's start and the
+earlier labels step left to make room.
 """
 from __future__ import annotations
 
@@ -115,6 +124,17 @@ def _span(a: str, b: str) -> str:
     if (da.year, da.month) == (db.year, db.month):
         return f"{MONTHS[da.month - 1]} {da.day}–{db.day}"
     return f"{_md(a)} – {_md(b)}"
+
+
+def _short(v: int) -> str:
+    """'9,876' in full; '12.3k' or '31M' from five digits on, so month labels fit their brackets."""
+    if v < 10000:
+        return f"{v:,}"
+    for div, suf in ((1_000_000, "M"), (1_000, "k")):
+        if v >= div:
+            q = v / div
+            return (f"{q:.1f}".rstrip("0").rstrip(".") if q < 100 else f"{q:.0f}") + suf
+    return f"{v:,}"
 
 
 def _tooltip(day: dict) -> str:
@@ -418,9 +438,11 @@ def render_battlefield(stats: dict, mode: str) -> str:
         # hover: lift (only when the SVG is opened directly)
         f".tw{{transition:transform .18s {EASE_OUT}}}"
         ".tw:hover{transform:translateY(-1px)}"
-        # every loop starts from the resting, fully drawn pose so frame 0 is complete
-        f".boat{{animation:bf-tide 7.1s {EASE_SINE} infinite}}"
-        "@keyframes bf-tide{0%,100%{transform:translateY(0)}50%{transform:translateY(-1.4px)}}"
+        # every loop starts from the resting, fully drawn pose so frame 0 is complete;
+        # everything runs on the one CSS clock (no SMIL), so nothing can drift apart
+        f".boat{{animation:bf-tide 6.7s {EASE_SINE} infinite}}"
+        "@keyframes bf-tide{0%,100%{transform:none}"
+        "31%{transform:translateY(-2.2px) rotate(-1.4deg)}69%{transform:translateY(.7px) rotate(1deg)}}"
         f".wk{{animation:bf-wake 3.7s {EASE_SINE} infinite}}"
         "@keyframes bf-wake{0%,100%{opacity:.75}50%{opacity:.3}}"
         f".cr1{{animation:bf-drift 13s {EASE_SINE} infinite}}"
@@ -434,9 +456,30 @@ def render_battlefield(stats: dict, mode: str) -> str:
         "@keyframes bf-breathe{0%,100%{opacity:1}50%{opacity:.78}}"
         f".beam{{animation:bf-beam 5.3s {EASE_SINE} infinite}}"
         "@keyframes bf-beam{0%,100%{opacity:1}50%{opacity:.45}}"
-        f".cl1{{animation:bf-cloud 23s {EASE_SINE} infinite}}"
-        f".cl2{{animation:bf-cloud 29s {EASE_SINE} -11s infinite reverse}}"
-        "@keyframes bf-cloud{0%,100%{transform:translateX(0)}50%{transform:translateX(-9px)}}"
+        # the lighthouse beam sweeps round: it shortens as it turns toward the viewer,
+        # the lamp flares, the beam passes behind the tower and swings back out to sea
+        f".swp{{animation:bf-sweep 11.3s {EASE_SINE} infinite}}"
+        "@keyframes bf-sweep{0%,100%{transform:none;opacity:1}"
+        "40%{transform:scale(.34,.9);opacity:.6}49%,59%{transform:scale(.03,.6);opacity:0}"
+        "71%{transform:scale(.38,.88);opacity:.55}}"
+        f".flare{{opacity:0;animation:bf-flare 11.3s {EASE_SINE} infinite}}"
+        "@keyframes bf-flare{0%,38%,62%,100%{opacity:0}49%{opacity:.85}}"
+        # clouds on two parallax layers: far wisps drift slowly and a little, near red clouds more
+        f".far{{animation:bf-far 43s {EASE_SINE} infinite}}"
+        "@keyframes bf-far{0%,100%{transform:none}50%{transform:translateX(8px)}}"
+        f".cl1{{animation:bf-cloud 29s {EASE_SINE} infinite}}"
+        f".cl2{{animation:bf-cloud 37s {EASE_SINE} -13s infinite reverse}}"
+        "@keyframes bf-cloud{0%,100%{transform:none}50%{transform:translateX(-17px)}}"
+        # dark-mode skyline windows: three staggered sets blink off now and then
+        f".w1{{animation:bf-win 6.1s {EASE_SINE} infinite}}"
+        f".w2{{animation:bf-win 8.9s {EASE_SINE} -3.1s infinite}}"
+        f".w3{{animation:bf-win 11.7s {EASE_SINE} -7.3s infinite}}"
+        "@keyframes bf-win{0%,58%,100%{opacity:1}70%,82%{opacity:.12}}"
+        # today's tower breathes a soft glow; the current month's bead keeps time with it
+        f".td{{opacity:0;animation:bf-today 3.4s {EASE_SINE} infinite}}"
+        "@keyframes bf-today{0%,100%{opacity:0}50%{opacity:1}}"
+        f".nowb{{animation:bf-now 3.4s {EASE_SINE} infinite}}"
+        "@keyframes bf-now{0%,100%{opacity:1}50%{opacity:.35}}"
         ".rn{animation:bf-rain 1.9s linear infinite}"
         ".rn2{animation-duration:2.7s}"
         "@keyframes bf-rain{0%{transform:translate(0,0)}100%{transform:translate(-4px,40px)}}"
@@ -458,6 +501,7 @@ def render_battlefield(stats: dict, mode: str) -> str:
     sun_x = P(min(cz, (n + pad) / 2) * 0.45 - pad, 7)[0]
     sun_y = hy - 14
     a(_sun(sun_x, sun_y, hy, dark))
+    a(_wisps(sun_x, hy, dark))
     a(_moon(790, hy - 92, dark))
     a(_skyline(hy, dark))
     a(f'<g class="cl1">{_red_cloud(782, hy - 70, .62)}</g>')
@@ -524,6 +568,7 @@ def render_battlefield(stats: dict, mode: str) -> str:
     center = n // 2  # the land's middle week; xc also counts the harbour margin
     order = list(range(0, center)) + list(range(n - 1, center - 1, -1))
     tops = {}  # date -> top-centre point, for the streak bridge and the peak pennant
+    today = days[-1][1]["date"] if days else ""
     for wd in range(7):
         z0 = zf(wd)
         z1 = z0 + 1
@@ -561,6 +606,18 @@ def render_battlefield(stats: dict, mode: str) -> str:
                 # floor lines as one dashed vertical stroke as wide as the face: a band every 11 px
                 faces.append(f'<path class="fl" stroke-width="{_f(FB[0] - FA[0])}" '
                              f'd="M{_f((FA[0] + FB[0]) / 2)},{_f(FA[1] - 10.7)}V{_f(FA[1] - hp + 5)}"/>')
+            if d["date"] == today:
+                # today: a soft glow breathes over the top and a warm wash over the front (hidden at frame 0)
+                tx_, ty_ = P(i + .5, z0 + .5, h)
+                fw = FB[0] - FA[0]
+                faces.append(
+                    f'<g class="td"><ellipse cx="{_f(tx_)}" cy="{_f(ty_)}" rx="{_f(fw * .8)}" '
+                    f'ry="{_f(fw * .4)}" fill="{STRAW_HAT["sun_glow"]}" filter="url(#glow)"/>'
+                    f'<path d="M{_f(FAt[0])},{_f(FAt[1])}H{_f(FBt[0])}L{_f(BBt[0])},{_f(BBt[1])}H{_f(BAt[0])}Z" '
+                    f'fill="#FFFFFF" opacity=".7"/>'
+                    f'<path d="M{_f(FA[0])},{_f(FA[1])}H{_f(FB[0])}V{_f(FBt[1])}H{_f(FAt[0])}Z" '
+                    f'fill="{STRAW_HAT["sun_glow"]}" opacity=".3"/></g>'
+                )
             row.append(f'<g class="tw p{lv}"><title>{_tooltip(d)}</title>{"".join(faces)}</g>')
         a("<g>" + "".join(row) + "</g>")
 
@@ -671,6 +728,26 @@ def _sun(sx: float, sy: float, hy: float, dark: bool) -> str:
     )
 
 
+def _wisps(sx: float, hy: float, dark: bool) -> str:
+    """The far cloud layer: a few long, thin streaks of cirrus across the low sun."""
+    col, op = ("#FFFFFF", ".62") if not dark else ("#6A4A28", ".42")
+    rim = STRAW_HAT["sun_glow"]
+    parts, rims = [], []
+    for dx, dy, ln, th in ((-150, -112, 150, 4.2), (40, -128, 120, 3.4), (-60, -78, 210, 3.8),
+                           (150, -96, 110, 3.0), (-210, -60, 90, 2.6)):
+        x0, y0 = sx + dx, hy + dy
+        # a long lens with a slightly fuller left end, drawn as one path per streak
+        parts.append(f"M{_f(x0)},{_f(y0)}q{_f(ln * .3)},{_f(-th * 1.6)} {_f(ln * .62)},{_f(-th * .5)}"
+                     f"q{_f(ln * .26)},{_f(-th * .4)} {_f(ln * .38)},{_f(th * .5)}"
+                     f"q{_f(-ln * .5)},{_f(th * .9)} {_f(-ln)},0Z")
+        rims.append(f"M{_f(x0 + ln * .08)},{_f(y0 + .9)}h{_f(ln * .8)}")
+    return (
+        f'<g class="far" clip-path="url(#above)"><path d="{"".join(parts)}" fill="{col}" opacity="{op}"/>'
+        f'<path d="{"".join(rims)}" stroke="{rim}" stroke-width="1" stroke-linecap="round" '
+        f'opacity="{".3" if dark else ".7"}"/></g>'
+    )
+
+
 def _glitter(P, sc, sx: float, hy: float, dark: bool) -> str:
     """The sun's path on the water: a warm glow under the horizon, a soft column and twinkling dashes."""
     glow = STRAW_HAT["sun_glow"]
@@ -751,7 +828,7 @@ def _moon(mx: float, my: float, dark: bool) -> str:
 def _skyline(hy: float, dark: bool) -> str:
     """A distant city silhouette behind the land, fading into the haze at the horizon."""
     tp = []
-    win = []
+    win = ([], [], [])
     spec = ((452, 24, 16), (470, 40, 12), (484, 30, 18), (504, 58, 13), (519, 36, 16), (537, 74, 14),
             (553, 50, 18), (573, 92, 12), (587, 62, 17), (606, 104, 15), (623, 70, 19), (644, 120, 13),
             (659, 84, 18), (679, 98, 14), (695, 66, 20), (717, 112, 13), (732, 78, 17), (751, 90, 15),
@@ -768,9 +845,11 @@ def _skyline(hy: float, dark: bool) -> str:
         if dark:
             for r in range(3, int(top // 9)):
                 if (k * 7 + r * 3) % 5 == 0:
-                    win.append(f"M{_f(tx + 3 + (r % 2) * (tw - 8))},{_f(ty + r * 9)}h2.4")
-    lights = (f'<path d="{"".join(win)}" stroke="{STRAW_HAT["sun_glow"]}" stroke-width="1.6" opacity=".55"/>'
-              if win else "")
+                    win[(k + r) % 3].append(f"M{_f(tx + 3 + (r % 2) * (tw - 8))},{_f(ty + r * 9)}h2.4")
+    # three sets of lit windows on staggered clocks, so the city twinkles at night
+    lights = (f'<g stroke="{STRAW_HAT["sun_glow"]}" stroke-width="1.6" opacity=".55">'
+              + "".join(f'<path class="w{q + 1}" d="{"".join(v)}"/>' for q, v in enumerate(win) if v)
+              + "</g>" if any(win) else "")
     return f'<g opacity="{".8" if not dark else ".95"}"><path d="{"".join(tp)}" fill="url(#city)"/>{lights}</g>'
 
 
@@ -837,13 +916,15 @@ def _lighthouse(x: float, y: float, s: float, dark: bool) -> str:
     return (
         f"<defs>{beam}</defs>"
         f'<g transform="translate({_f(x)},{_f(y)}) scale({s:.3f})">'
-        f'<path class="beam" d="M-2,-44L-118,-58L-118,-28Z" fill="url(#beamG)"/>'
+        f'<g transform="translate(-2,-44)"><g class="swp">'
+        f'<path class="beam" d="M0,0L-116,-14L-116,16Z" fill="url(#beamG)"/></g></g>'
         f'<path d="M-15,2Q-12,-6 -4,-6Q2,-9 8,-5Q15,-4 16,2Z" fill="{rock}"/>'
         f'<path d="M-6,-5L-4,-36H4L6,-5Z" fill="{white}" stroke="{_shade(white, .3)}" stroke-width=".6"/>'
         f'<path d="M-5.6,-12L-5.2,-18H5.2L5.6,-12ZM-4.7,-25L-4.4,-30H4.4L4.7,-25Z" fill="{red}"/>'
         f'<path d="M-6,-36H6V-38H-6Z" fill="{_shade(white, .55)}"/>'
         f'<rect x="-3.6" y="-45" width="7.2" height="7" fill="{glow}"/>'
         f'<circle class="beam" cx="0" cy="-41.5" r="7" fill="{glow}" opacity=".55" filter="url(#glow)"/>'
+        f'<circle class="flare" cx="0" cy="-41.5" r="11" fill="{glow}" filter="url(#glow)"/>'
         f'<path d="M-5,-45L0,-51L5,-45Z" fill="{red}"/>'
         f"</g>"
     )
@@ -916,25 +997,47 @@ def _month_totals(weeks, monthly: dict, coast: int, joined: str, P, m: dict, ram
             spans[key] = [min(lo, frac), max(hi, frac)]
     jm = joined[:7] if joined else ""
     first_active = min((k for k in spans if int(monthly.get(k) or 0) > 0), default="")
+    current = max(spans) if spans else ""
     out = []
     y = MONTH_Y
+    items = []  # [key, x0, x1, total, label centre, label width]
     for key in sorted(spans):
         if jm and key < jm:
             continue
-        if first_active and key < first_active:
+        if first_active and key < first_active and key != current:
             continue  # leading silence: no row of zeros before the first active month
         lo, hi = spans[key]
         x0, x1 = P(lo - .5 / 7, zmid)[0] + 2, P(hi + .5 / 7, zmid)[0] - 2
-        if x1 - x0 < 30:
+        if x1 - x0 < 30 and key != current:
             continue
-        mid = (x0 + x1) / 2
+        if key == current and x1 - x0 < 8:  # the 1st or 2nd of the month: a short stub, never nothing
+            x0 = x1 - 8
         total = int(monthly.get(key) or 0)
+        width = _est(MONTHS[int(key[5:7]) - 1] + " ", 13) + _est(_short(total), 13, .62)
+        items.append([key, x0, x1, total, (x0 + x1) / 2, width])
+    # The current month always shows, even when only a few days old. Its label keeps
+    # inside the frame and earlier labels step left (right to left) so nothing overlaps.
+    if items and items[-1][0] == current:
+        last = items[-1]
+        if last[5] > last[2] - last[1]:  # wider than its bracket: hang it from the bracket's start
+            last[4] = last[1] - 4 + last[5] / 2
+        last[4] = min(last[4], W - 28 - last[5] / 2)
+    for k in range(len(items) - 2, -1, -1):
+        limit = items[k + 1][4] - items[k + 1][5] / 2 - 13
+        if items[k][4] + items[k][5] / 2 > limit:
+            items[k][4] = limit - items[k][5] / 2
+    for key, x0, x1, total, mid, _w in items:
+        live = key == current
+        tick = "" if live else f"V{y + 10}"  # the current month is still open on the right
         out.append(
-            f'<path d="M{_f(x0)},{y + 10}V{y + 6}H{_f(x1)}V{y + 10}" fill="none" stroke="{edge if total == 0 else muted}" '
+            f'<path d="M{_f(x0)},{y + 10}V{y + 6}H{_f(x1)}{tick}" fill="none" stroke="{edge if total == 0 else muted}" '
             f'stroke-width=".8" opacity=".75"/>'
             f'<text x="{_f(mid)}" y="{y}" text-anchor="middle" font-size="13" fill="{muted}">'
-            f'{MONTHS[int(key[5:7]) - 1]} <tspan font-weight="700" fill="{text}">{total:,}</tspan></text>'
+            f'{MONTHS[int(key[5:7]) - 1]} <tspan font-weight="700" fill="{text}">{_short(total)}</tspan></text>'
         )
+        if live:  # a small gold "now" bead at the open end, breathing with today's tower
+            out.append(f'<circle class="nowb" cx="{_f(x1)}" cy="{y + 6}" r="2.6" fill="{ramp[2]}" '
+                       f'stroke="{text}" stroke-width=".6"/>')
     if coast >= 6:
         x0, x1 = P(0, zmid)[0] + 8, P(coast, zmid)[0] - 8
         out.append(
@@ -972,7 +1075,7 @@ def _hud(s: dict, m: dict, ramp: list) -> str:
     digits = str(abs(total))
     value = f"{total:,}" if len(digits) <= 7 else f"{digits[0]}.{digits[1:3]}e{len(digits)-1}"
     vfs = 54 if len(value) <= 5 else 40
-    vw = _est(value, vfs, .55)
+    vw = vfs * sum(.3 if ch in ",." else .57 for ch in value)  # Georgia figures: even a 1 is wide
     parts = [
         f'<path d="M30,{HUD_Y}H810" stroke="{edge}" stroke-width=".8"/>',
         f'<path d="M30,{HUD_Y}H{_f(30 + vw)}" stroke="{ramp[2]}" stroke-width="2"/>',

@@ -3,7 +3,9 @@ from __future__ import annotations
 import argparse
 import base64
 import datetime
+import gzip
 import json
+import os
 import struct
 import sys
 import zlib
@@ -11,6 +13,10 @@ from pathlib import Path
 from urllib.parse import urljoin, urlsplit
 
 ROOT = Path(__file__).resolve().parent.parent
+TRANSFER_BUDGET = 600 * 1024  # bytes on the wire for the War Room's first load (ROADMAP Phase 6)
+BROWSERS = ("chromium", "webkit", "firefox")
+# GPU-less CI runners render WebGL in software (SwiftShader through ANGLE), as scripts/record_orbit.py does.
+SOFTWARE_GL = ["--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--ignore-gpu-blocklist"]
 AZIMUTHS = (-150, -90, -45, 0, 45, 90, 150)
 ELEVATIONS = (12, 34, 65)
 PIXEL_SCOPE = "Detects catastrophic black frames only; not proof that all possible rendering artifacts are absent."
@@ -121,10 +127,17 @@ def semantic_controls(page) -> list[dict]:
             selector += ", button[data-camera]"
         controls = page.locator(selector)
         candidates = [controls.nth(index) for index in range(controls.count()) if controls.nth(index).is_visible() and controls.nth(index).is_enabled()]
+        more = page.locator("#dock-more-toggle")
+        if not candidates and more.count() and more.first.is_visible():
+            # On phones the presets and filters live in the dock's controls sheet.
+            more.first.click()
+            page.wait_for_timeout(350)
+            candidates = [controls.nth(index) for index in range(controls.count()) if controls.nth(index).is_visible() and controls.nth(index).is_enabled()]
         if not candidates:
             results.append({"control": kind, "status": "skipped", "reason": "semantic data attribute unavailable"})
             continue
-        control = candidates[-1]
+        # Toggle chips un-press when clicked again, so prefer one that is not already pressed.
+        control = next((item for item in reversed(candidates) if item.get_attribute("aria-pressed") != "true"), candidates[-1])
         before = control.get_attribute("aria-pressed")
         control.click()
         if before is not None:
@@ -380,7 +393,14 @@ def check_dispose_reinit(page, args, label: str) -> dict:
         return {fresh: Boolean(scene) && scene !== window.__checkOldScene,
                 disposed: scene && scene.getDiagnostics ? scene.getDiagnostics().disposed : null};
     """)
-    if wait_stage(page, args.timeout_ms) != "ready" or not reinit["fresh"] or reinit["disposed"]:
+    if not reinit["fresh"]:
+        # The UI now animates the theme in place instead of rebuilding the scene, so nothing replaces the
+        # disposed one. Reload to leave a live scene for the checks that follow.
+        page.reload(wait_until="networkidle", timeout=args.timeout_ms)
+        wait_stage(page, args.timeout_ms)
+        return {"status": "skipped", "reason": "the app no longer rebuilds the scene on a theme switch; dispose() itself returned "
+                f"disposed={disposed!r}", "disposed_flag_after_dispose": disposed}
+    if wait_stage(page, args.timeout_ms) != "ready" or reinit["disposed"]:
         raise AssertionError(f"scene was not rebuilt after dispose(): {reinit}")
     pixels = stage_screenshot(page, args.out / f"{label}-reinit.png")
     if not pixels["passed"]:
@@ -416,6 +436,264 @@ def camera_sweep(page, args, label: str) -> dict:
         "camera_finite": {name: camera.count(name) for name in ("passed", "failed", "skipped")},
         "camera_finite_status": "skipped" if camera.count("skipped") == len(camera) else "failed" if "failed" in camera else "passed",
     }
+
+
+def skipped(reason: str) -> dict:
+    return {"status": "skipped", "reason": reason}
+
+
+def scene_has(page, expression: str, *names: str) -> list:
+    # Names of the given scene members that are missing; feature detection for lanes that land in any order.
+    return scene_eval(page, expression, "if (!scene) return arg; return arg.filter(name => typeof scene[name] !== 'function');", list(names))
+
+
+def camera_pose(page, expression: str):
+    return scene_eval(page, expression, "return scene && typeof scene.getCameraPose === 'function' ? JSON.parse(JSON.stringify(scene.getCameraPose())) : null;")
+
+
+def pose_delta(a: dict, b: dict) -> float:
+    return max(abs(a["position"][axis] - b["position"][axis]) for axis in "xyz")
+
+
+def check_scene_ready(page, args) -> dict:
+    state = scene_eval(page, args.scene_global, """
+        if (!scene) return 'scene';
+        if (!scene.ready || typeof scene.ready.then !== 'function') return 'absent';
+        return Promise.race([scene.ready.then(() => 'resolved'), new Promise(resolve => setTimeout(() => resolve('timeout'), 10000))]);
+    """)
+    if state == "absent":
+        return skipped("scene.ready unavailable")
+    if state != "resolved":
+        raise AssertionError(f"scene.ready did not resolve ({state})")
+    return {"ready": "resolved"}
+
+
+def check_arrival(page, args) -> dict:
+    diagnostics = scene_eval(page, args.scene_global, "return scene && scene.getDiagnostics ? scene.getDiagnostics() : null;")
+    if not isinstance(diagnostics, dict) or "arrival" not in diagnostics:
+        return skipped("getDiagnostics().arrival unavailable")
+    try:
+        page.wait_for_function(
+            "(expression) => { const scene = expression.split('.').reduce((v, k) => v == null ? v : v[k], window); const a = scene.getDiagnostics().arrival; return a === 'done' || a === 'skipped'; }",
+            arg=args.scene_global, timeout=10000)
+    except Exception:
+        raise AssertionError(f"arrival never reached done/skipped (last: {scene_eval(page, args.scene_global, 'return scene.getDiagnostics().arrival;')!r})")
+    return {"arrival": scene_eval(page, args.scene_global, "return scene.getDiagnostics().arrival;")}
+
+
+def check_theme_switch_identity(page, args, mode: str) -> dict:
+    diagnostics = scene_eval(page, args.scene_global, "return scene && scene.getDiagnostics ? scene.getDiagnostics() : null;")
+    if not isinstance(diagnostics, dict) or "theme" not in diagnostics or "themeTransition" not in diagnostics:
+        return skipped("getDiagnostics().theme/.themeTransition unavailable (animated theme switch not landed)")
+    other = "dark" if mode == "light" else "light"
+    result = {}
+    page.evaluate("(expression) => { window.__checkScene = expression.split('.').reduce((v, k) => v == null ? v : v[k], window); }", args.scene_global)
+    for target in (other, mode):
+        before = scene_eval(page, args.scene_global, "return scene.getDiagnostics().theme;")
+        set_theme(page, target)
+        try:
+            page.wait_for_function(
+                "(expression) => { const scene = expression.split('.').reduce((v, k) => v == null ? v : v[k], window); return scene && !scene.getDiagnostics().themeTransition; }",
+                arg=args.scene_global, timeout=5000)
+        except Exception:
+            raise AssertionError("themeTransition stayed true for over 5 s")
+        same = page.evaluate("(expression) => window.__checkScene === expression.split('.').reduce((v, k) => v == null ? v : v[k], window)", args.scene_global)
+        theme = scene_eval(page, args.scene_global, "return scene.getDiagnostics().theme;")
+        if not same:
+            raise AssertionError(f"the scene object was replaced by the switch to {target}; it should be animated in place")
+        if theme != target or before == theme:
+            raise AssertionError(f"getDiagnostics().theme is {theme!r} after switching to {target} (was {before!r})")
+        result[target] = {"before": before, "after": theme, "same_scene": same}
+    return result
+
+
+def peak_date(page) -> str:
+    stats = page.evaluate("async () => (await fetch('stats.json', {cache: 'no-store'})).json()")
+    best = stats.get("best_day") or {}
+    if best.get("date"):
+        return best["date"]
+    days = [day for week in stats.get("weeks", []) for day in week]
+    return max(days, key=lambda day: day["count"])["date"]
+
+
+def check_deep_link(side_page, args, url: str) -> dict:
+    page = side_page()
+    page.goto(url, wait_until="domcontentloaded", timeout=args.timeout_ms)
+    date = peak_date(page)
+    parts = urlsplit(url)
+    link = parts._replace(query="", fragment=f"day={date}&view=map").geturl()
+    page.goto(link, wait_until="networkidle", timeout=args.timeout_ms)
+    wait_stage(page, args.timeout_ms)
+    try:
+        page.wait_for_function("() => { const s = window.__atlas && window.__atlas.getState(); return Boolean(s && s.selectedDate && s.preset === 'map'); }", timeout=8000)
+    except Exception:
+        pass
+    state = atlas_state(page)
+    if state.get("selectedDate") != date or state.get("preset") != "map":
+        raise AssertionError(f"#day={date}&view=map gave selectedDate={state.get('selectedDate')!r}, preset={state.get('preset')!r}")
+    arrival = page.evaluate("() => window.__atlas.scene && window.__atlas.scene.getDiagnostics ? window.__atlas.scene.getDiagnostics().arrival : null")
+    if arrival not in (None, "done", "skipped"):
+        raise AssertionError(f"a deep link should skip the arrival, but arrival is {arrival!r}")
+    page.close()
+    return {"date": date, "preset": state["preset"], "arrival": arrival}
+
+
+CHROME_SELECTORS = ".dock, .hero, header, nav, #details, #stage-loading, .toolbar"
+
+
+def check_capture_orbit(side_page, args, url: str) -> dict:
+    page = side_page()
+    page.set_viewport_size({"width": 840, "height": 420})
+    page.goto(urlsplit(url)._replace(query="capture=orbit", fragment="").geturl(), wait_until="networkidle", timeout=args.timeout_ms)
+    wait_stage(page, args.timeout_ms)
+    info = page.evaluate("""selectors => {
+        const visible = [...document.querySelectorAll(selectors)].filter(node => {
+            const style = getComputedStyle(node), box = node.getBoundingClientRect();
+            return style.display !== 'none' && style.visibility !== 'hidden' && box.width > 0 && box.height > 0 && Number(style.opacity) > 0;
+        }).map(node => node.id ? '#' + node.id : node.tagName.toLowerCase() + '.' + node.className);
+        const stage = document.getElementById('stage').getBoundingClientRect();
+        return {visible, stage: [Math.round(stage.width), Math.round(stage.height)], viewport: [innerWidth, innerHeight], scrollHeight: document.documentElement.scrollHeight};
+    }""", CHROME_SELECTORS)
+    page.close()
+    if info["visible"]:
+        raise AssertionError(f"?capture=orbit leaves chrome visible: {info['visible']}")
+    if info["stage"][0] < info["viewport"][0] - 2 or info["stage"][1] < info["viewport"][1] - 2:
+        raise AssertionError(f"?capture=orbit stage is {info['stage']}, viewport {info['viewport']}")
+    return info
+
+
+CARD_SELECTORS = ("#voyage [data-chapter]", "#voyage .voyage-card", "#voyage .chapter", "#voyage article", "#voyage section")
+
+
+def check_voyage_cards(page, args) -> dict:
+    if not page.locator("#voyage").count():
+        return skipped("#voyage not on the page")
+    chapters = page.evaluate("""async () => {
+        const module = await import(new URL('model.js', location.href).href);
+        if (typeof module.buildChapters !== 'function') return null;
+        return module.buildChapters(window.__atlas.model).map(chapter => chapter.id);
+    }""")
+    if chapters is None:
+        return skipped("model.js exports no buildChapters")
+    counts = {selector: page.locator(selector).count() for selector in CARD_SELECTORS}
+    cards = next((count for count in counts.values() if count), 0)
+    if cards != len(chapters):
+        raise AssertionError(f"#voyage has {cards} cards for {len(chapters)} chapters {chapters} ({counts})")
+    return {"chapters": chapters, "cards": cards}
+
+
+def check_voyage_scroll(page, args) -> dict:
+    voyage = page.locator("#voyage")
+    if not voyage.count():
+        return skipped("#voyage not on the page")
+    if scene_has(page, args.scene_global, "getCameraPose"):
+        return skipped("scene.getCameraPose unavailable")
+    geometry = page.evaluate("() => { const box = document.getElementById('voyage').getBoundingClientRect(); return {top: box.top + scrollY, height: box.height, viewport: innerHeight}; }")
+    if geometry["height"] < geometry["viewport"]:
+        raise AssertionError(f"#voyage is only {geometry['height']:.0f}px tall; nothing to scroll through")
+    poses, states = [], []
+    for fraction in (0.05, 0.3, 0.55, 0.8, 0.97):
+        page.evaluate("y => scrollTo(0, y)", geometry["top"] + fraction * (geometry["height"] - geometry["viewport"]))
+        settle(page, 450)
+        poses.append(camera_pose(page, args.scene_global))
+        states.append(page.evaluate("() => document.documentElement.dataset.voyage || ''"))
+    page.evaluate("() => scrollTo(0, 0)")
+    settle(page, 450)
+    top_state = page.evaluate("() => document.documentElement.dataset.voyage || ''")
+    spread = max(pose_delta(a, b) for a in poses for b in poses)
+    if spread < 0.05:
+        raise AssertionError(f"scrolling through #voyage moved the camera by only {spread:.3f}")
+    if "active" not in states:
+        raise AssertionError(f"documentElement.dataset.voyage never became 'active' while scrolling ({states})")
+    if top_state == "active":
+        raise AssertionError("dataset.voyage is still 'active' back at the top of the page")
+    return {"camera_spread": round(spread, 3), "dataset_voyage": states, "at_top": top_state}
+
+
+def check_wheel_scrolls_page(page, args) -> dict:
+    stage = page.locator("#stage").bounding_box()
+    if page.evaluate("() => document.documentElement.scrollHeight - innerHeight") < 600:
+        return skipped("page is not scrollable enough to test a wheel")
+    page.evaluate("() => scrollTo(0, 0)")
+    settle(page, 200)
+    before = camera_pose(page, args.scene_global)
+    page.mouse.move(stage["x"] + stage["width"] / 2, min(stage["y"] + stage["height"] / 2, page.viewport_size["height"] / 2))
+    page.mouse.wheel(0, 300)
+    settle(page, 500)
+    scrolled = page.evaluate("() => scrollY")
+    after = camera_pose(page, args.scene_global)
+    voyage = page.evaluate("() => document.documentElement.dataset.voyage || ''")
+    page.evaluate("() => scrollTo(0, 0)")
+    settle(page, 300)
+    if scrolled <= 0:
+        raise AssertionError("a plain wheel over the canvas did not scroll the page")
+    result = {"scrollY": scrolled}
+    if before and after and voyage != "active":
+        zoomed = abs(distance(before) - distance(after))
+        if zoomed > 0.01:
+            raise AssertionError(f"a plain wheel over the canvas zoomed the camera (distance changed by {zoomed:.3f})")
+        result["zoom_delta"] = round(zoomed, 4)
+    else:
+        result["zoom"] = "not compared: getCameraPose unavailable or the voyage moved the camera"
+    return result
+
+
+def distance(pose: dict) -> float:
+    return sum((pose["position"][axis] - pose["target"][axis]) ** 2 for axis in "xyz") ** 0.5
+
+
+def check_keyboard_presets(page, args) -> dict:
+    state = atlas_state(page)
+    if "preset" not in state:
+        return skipped("getState().preset unavailable")
+    seen = {}
+    page.evaluate("() => document.activeElement && document.activeElement.blur && document.activeElement.blur()")
+    for key in "1234":
+        page.keyboard.press(key)
+        settle(page, 150)
+        seen[key] = atlas_state(page).get("preset")
+    page.keyboard.press("1")
+    settle(page, 150)
+    if len(set(seen.values())) != 4:
+        raise AssertionError(f"keys 1-4 gave presets {seen}; expected four distinct presets")
+    return {"presets": seen}
+
+
+def check_transfer_budget(browser, args, url: str, layout: str, width: int, height: int, mode: str) -> dict:
+    # A cold, cache-less load in its own context. The wire size is what the browser reports (compressed body
+    # plus headers); a local server sends no compression, so same-origin text is estimated with gzip -6 instead.
+    kwargs = {}
+    if layout == "mobile" and args.browser != "firefox":
+        kwargs = {"is_mobile": True, "has_touch": True}
+    context = browser.new_context(viewport={"width": width, "height": height}, color_scheme=mode, device_scale_factor=1, **kwargs)
+    context.add_init_script("try { localStorage.setItem('warroom-theme', %s); } catch (error) {}" % json.dumps(mode))
+    page = context.new_page()
+    entries = []
+    origin = "{0.scheme}://{0.netloc}".format(urlsplit(url))
+    page.on("response", lambda response: entries.append(response))
+    try:
+        page.goto(url, wait_until="networkidle", timeout=args.timeout_ms)
+        wait_stage(page, args.timeout_ms)
+        rows = []
+        for response in entries:
+            request = response.request
+            try:
+                sizes = request.sizes()
+                wire = sizes["responseBodySize"] + sizes["responseHeadersSize"]
+                if response.url.startswith(origin) and not response.headers.get("content-encoding") and any(
+                        kind in response.headers.get("content-type", "") for kind in ("text", "javascript", "json", "svg", "xml")):
+                    wire = len(gzip.compress(response.body(), 6)) + sizes["responseHeadersSize"]
+            except Exception:
+                wire = 0
+            rows.append({"url": response.url, "bytes": wire})
+    finally:
+        context.close()
+    total = sum(row["bytes"] for row in rows)
+    result = {"status": "passed", "total_bytes": total, "budget_bytes": TRANSFER_BUDGET, "requests": len(rows),
+              "largest": sorted(rows, key=lambda row: -row["bytes"])[:5]}
+    if total > TRANSFER_BUDGET:
+        result.update(status="failed", reason=f"first load transferred {total / 1024:.0f} KB, budget {TRANSFER_BUDGET // 1024} KB")
+    return result
 
 
 def run_check(case: dict, name: str, function) -> None:
@@ -532,6 +810,8 @@ def check_preview(page, mode: str, case: dict) -> None:
 IGNORED_CONSOLE = (
     ("error", "favicon", "404"),
     ("error", "cdn.jsdelivr.net/npm/github-markdown-css", ""),
+    # Firefox logs this when the dispose check calls renderer.forceContextLoss() on purpose.
+    ("warning", "webgl context was lost", ""),
 )
 
 
@@ -552,11 +832,10 @@ def run_case(browser, args, report: dict, layout: str, width: int, height: int, 
     report["cases"].append(case)
     context = browser.new_context(
         viewport={"width": width, "height": height}, color_scheme=mode, device_scale_factor=1,
-        is_mobile=layout == "mobile", has_touch=layout == "mobile",
+        **mobile_options(args, layout),
     )
     # Equivalent to setting localStorage and reloading: the stored theme is in place before the page's first script.
     context.add_init_script("try { localStorage.setItem('warroom-theme', %s); } catch (error) {}" % json.dumps(mode))
-    page = context.new_page()
 
     def console(message):
         if message.type not in ("warning", "error"):
@@ -564,19 +843,29 @@ def run_case(browser, args, report: dict, layout: str, width: int, height: int, 
         entry = {"type": message.type, "text": message.text, "url": message.location.get("url", "")}
         (case["ignored_console"] if ignored_console(entry["type"], entry["url"], entry["text"]) else case["console"]).append(entry)
 
-    page.on("console", console)
-    page.on("pageerror", lambda error: case["page_errors"].append(str(error)))
+    def wire(target):
+        target.on("console", console)
+        target.on("pageerror", lambda error: case["page_errors"].append(str(error)))
+        return target
+
+    def side_page():
+        # Extra pages in the same context (so the stored theme applies); their console output counts too.
+        return wire(context.new_page())
+
+    page = wire(context.new_page())
     try:
         response = page.goto(url, wait_until="networkidle", timeout=args.timeout_ms)
         if response is None or response.status >= 400:
             raise AssertionError("endpoint did not return a successful response")
-        is_site = "site" in urlsplit(url).path.split("/")
+        is_site = args.deployed or "site" in urlsplit(url).path.split("/")
         stage = wait_stage(page, args.timeout_ms) if is_site else None
         if is_site and not args.flat:
             if stage != "ready":
                 case["errors"].append("scene fell back to the static image; 3D checks cannot run")
             else:
                 run_check(case, "atlas_api_and_initial_preset", lambda: check_atlas_api(page, args))
+                run_check(case, "scene_ready", lambda: check_scene_ready(page, args))
+                run_check(case, "arrival_completes", lambda: check_arrival(page, args))
         run_check(case, "theme_button", lambda: check_theme_button(page, args, mode, is_site))
         settle(page, args.settle_ms)
         case["overflow"] = page.evaluate("() => ({scrollWidth:document.documentElement.scrollWidth, innerWidth:innerWidth})")
@@ -591,18 +880,29 @@ def run_case(browser, args, report: dict, layout: str, width: int, height: int, 
             run_check(case, "capture_data_url", lambda: check_capture(page, args, label))
             run_check(case, "replay_scrub", lambda: check_replay(page, args))
             run_check(case, "set_filter_top", lambda: check_filter(page, args))
+            run_check(case, "theme_switch_keeps_scene", lambda: check_theme_switch_identity(page, args, mode))
+            run_check(case, "deep_link_peak_map", lambda: check_deep_link(side_page, args, url))
+            run_check(case, "voyage_cards", lambda: check_voyage_cards(page, args))
+            run_check(case, "voyage_scroll", lambda: check_voyage_scroll(page, args))
+            if layout == "desktop":
+                run_check(case, "capture_orbit_hides_chrome", lambda: check_capture_orbit(side_page, args, url))
+                run_check(case, "wheel_scrolls_page", lambda: check_wheel_scrolls_page(page, args))
+                run_check(case, "keyboard_presets_1_to_4", lambda: check_keyboard_presets(page, args))
+            run_check(case, "transfer_budget", lambda: check_transfer_budget(browser, args, url, layout, width, height, mode))
             if layout == "desktop" and not args.no_camera_sweep:
                 run_check(case, "camera_sweep", lambda: camera_sweep(page, args, label))
                 sweep = case["checks"].get("camera_sweep", {})
                 if sweep.get("camera_finite", {}).get("skipped"):
                     case["skipped"].append(f"camera_finite: {sweep['camera_finite']['skipped']} of {len(sweep['poses'])} poses skipped, getDiagnostics() exposes no camera")
-            run_check(case, "dispose_and_reinit", lambda: check_dispose_reinit(page, args, label))
         if is_site and not args.flat:
             run_check(case, "semantic_controls", lambda: {"controls": semantic_controls(page)})
             case["skipped"].extend(
                 f"control {entry['control']}: {entry.get('reason', 'skipped')}"
                 for entry in case["checks"].get("semantic_controls", {}).get("controls", []) if entry["status"] == "skipped"
             )
+        if is_site and stage == "ready" and not args.flat:
+            # Last of the scene checks: it disposes the scene (and reloads the page when nothing rebuilds it).
+            run_check(case, "dispose_and_reinit", lambda: check_dispose_reinit(page, args, label))
         if not is_site:
             check_preview(page, mode, case)
         settle(page, args.settle_ms)
@@ -623,14 +923,26 @@ def run_case(browser, args, report: dict, layout: str, width: int, height: int, 
         context.close()
 
 
+def mobile_options(args, layout: str) -> dict:
+    # Firefox has no mobile emulation; touch alone is still applied.
+    if layout != "mobile":
+        return {}
+    return {"has_touch": True} if args.browser == "firefox" else {"is_mobile": True, "has_touch": True}
+
+
 def launch(playwright, args):
+    if args.browser != "chromium":
+        return getattr(playwright, args.browser).launch(headless=True)
+    options = {"headless": True}
+    if args.software_gl:
+        options["args"] = SOFTWARE_GL
     try:
-        return playwright.chromium.launch(channel=args.channel, headless=True)
+        return playwright.chromium.launch(channel=args.channel or None, **options)
     except Exception as error:
         if not args.channel:
             raise
         print(f"Chrome channel {args.channel!r} unavailable ({str(error).splitlines()[0]}); falling back to bundled Chromium.", file=sys.stderr)
-        return playwright.chromium.launch(headless=True)
+        return playwright.chromium.launch(**options)
 
 
 def run_browser(args, sync_playwright) -> dict:
@@ -638,13 +950,16 @@ def run_browser(args, sync_playwright) -> dict:
         "base": args.base, "started": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
         "pixel_check_scope": PIXEL_SCOPE, "scene_expression": f"window.{args.scene_global}",
         "camera_contract": f"window.{args.scene_global}.debugOrbit(azimuthDegrees, elevationDegrees); getDiagnostics() camera/target {{x,y,z}}",
+        "browser": args.browser, "deployed": args.deployed,
         "mode": "flat" if args.flat else "scene", "cases": [], "model_tests": {"passed": False},
     }
-    endpoints = args.endpoint or (["/site/?flat"] if args.flat else ["/site/", "/.preview/"])
+    endpoints = args.endpoint or (["/"] if args.deployed else ["/site/?flat"] if args.flat else ["/site/", "/.preview/"])
     with sync_playwright() as playwright:
         browser = launch(playwright, args)
         try:
-            report["model_tests"] = check_model_tests(browser, args)
+            report["browser_version"] = f"{args.browser} {browser.version}"
+            report["model_tests"] = ({"passed": True, "skipped": "the deployed site publishes no tests/"} if args.deployed
+                                     else check_model_tests(browser, args))
             for layout, width, height in (("desktop", 1440, 1000), ("mobile", 390, 844)):
                 for mode in ("light", "dark"):
                     for endpoint in endpoints:
@@ -681,7 +996,10 @@ def main() -> int:
     parser.add_argument("--base", default="http://127.0.0.1:8766")
     parser.add_argument("--endpoint", action="append", help="Repeat for endpoints; defaults to /site/ and /.preview/ (or /site/?flat with --flat)")
     parser.add_argument("--out", type=Path, required=True)
-    parser.add_argument("--channel", default="chrome")
+    parser.add_argument("--browser", choices=BROWSERS, default="chromium", help="Playwright browser engine (default: chromium)")
+    parser.add_argument("--channel", default="chrome", help="Chromium channel; pass '' for Playwright's bundled Chromium")
+    parser.add_argument("--deployed", action="store_true", help="--base is the published site root (every endpoint is a War Room page; no tests/ or .preview/)")
+    parser.add_argument("--software-gl", action="store_true", default=bool(os.environ.get("CI")), help="Software WebGL flags for Chromium on GPU-less runners (default on when CI is set)")
     parser.add_argument("--flat", action="store_true", help="Test the /site/?flat static fallback: visible themed <img>, no scene, no console output")
     parser.add_argument("--scene-global", default="__atlas.scene", help="Dotted window expression that resolves to the scene API (default: __atlas.scene)")
     parser.add_argument("--no-camera-sweep", action="store_true")

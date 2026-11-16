@@ -1,18 +1,28 @@
 // The War Room: data model, flat heatmap, details panel, stats and the bridge
 // to the 3D scene (scene.js is loaded lazily so the page still works without WebGL).
+// The scene is the hero: a pinned full-bleed stage with overlay type, a control dock,
+// deep links, keyboard shortcuts and the scroll-driven voyage mounted over it.
 import { buildModel, POWER, WEEKDAYS, formatDate, formatCount, contributionText, matchesFilter, replayAt } from './model.js';
 
 const $ = (selector, root = document) => root.querySelector(selector);
+const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 const el = (tag, className, text) => {
   const node = document.createElement(tag);
   if (className) node.className = className;
   if (text != null) node.textContent = text;
   return node;
 };
+const clamp = (value, min = -1, max = 1) => Math.max(min, Math.min(max, value));
 const mqReduce = window.matchMedia('(prefers-reduced-motion: reduce)');
 const mqCoarse = window.matchMedia('(pointer: coarse)');
 const mqMobile = window.matchMedia('(max-width: 720px)');
 const REPLAY_MS = 14000;
+const PRESETS = ['front', 'map', 'isometric', 'cinematic'];
+const FILTERS = ['all', 'top', 'streak', 'weekdays', 'weekends'];
+const SNAPS = ['peek', 'half', 'full'];
+const params = new URLSearchParams(location.search);
+// ?capture=orbit: chrome hidden, stage = viewport, motion off, no arrival (scripts/record_orbit.py).
+const CAPTURE = params.get('capture') === 'orbit';
 // ---------- dates (all YYYY-MM-DD strings are treated as UTC calendar days) ----------
 const fullDate = (date) => formatDate(date, { month: 'long', day: 'numeric', year: 'numeric' });
 const shortDate = (date) => formatDate(date, { month: 'short', day: 'numeric', year: 'numeric' });
@@ -23,8 +33,10 @@ export { contributionText };
 const state = {
   model: null, available: false, selectedDate: null, hoverDate: null, activeDate: null,
   filter: 'all', preset: 'front', replayProgress: 1, playing: false, replayFrame: 0,
-  motion: false, interactive: !mqCoarse.matches && !mqMobile.matches, quality: 'auto',
+  motion: false, interactive: !CAPTURE && !mqCoarse.matches && !mqMobile.matches, quality: 'auto',
   scene: null, sceneGeneration: 0, sceneUnavailable: false, cells: new Map(), returnFocus: null,
+  arrival: 'pending', deepLinked: false, pendingFly: null, flown: false, sheet: 'half',
+  voyage: null, voyageMounted: false, voyageActive: false, chapter: null, tilt: false, counted: false,
 };
 const currentTheme = () => document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light';
 const tip = $('#tip');
@@ -35,6 +47,9 @@ Object.defineProperty(window, '__atlas', {
     getState: () => Object.freeze({
       selectedDate: state.selectedDate, filter: state.filter, preset: state.preset,
       replayProgress: state.replayProgress, theme: currentTheme(), interactive: state.interactive,
+      motion: state.motion, playing: state.playing, arrival: state.arrival, deepLinked: state.deepLinked,
+      sheet: state.selectedDate ? state.sheet : null, voyage: state.voyageActive, chapter: state.chapter,
+      tilt: state.tilt, capture: CAPTURE,
     }),
   }),
   writable: false,
@@ -63,6 +78,24 @@ function sceneCall(method, ...args) {
     fallback3D();
   }
 }
+/** Newer scene methods (flyTo, setParallax, setHighlight…) are optional: feature-detected, never fatal. */
+function sceneOptional(method, ...args) {
+  const scene = state.scene;
+  if (!scene || typeof scene[method] !== 'function') return undefined;
+  try {
+    const result = scene[method](...args);
+    if (result && typeof result.catch === 'function') result.catch((error) => console.warn(`Landscape ${method}:`, error));
+    return result;
+  } catch (error) {
+    console.warn(`Landscape ${method}:`, error);
+    return undefined;
+  }
+}
+const sceneHas = (method) => Boolean(state.scene && typeof state.scene[method] === 'function');
+function sceneAlive() {
+  if (!state.scene) return false;
+  try { return !state.scene.getDiagnostics?.().disposed; } catch (error) { return false; }
+}
 function setHover(date, source, position) {
   if (state.hoverDate) state.cells.get(state.hoverDate)?.classList.remove('is-hover');
   state.hoverDate = state.model?.byDate.has(date) ? date : null;
@@ -71,7 +104,7 @@ function setHover(date, source, position) {
   if (state.hoverDate && position) showTip(state.model.byDate.get(state.hoverDate), position.x, position.y);
   else hideTip();
 }
-function setSelected(date, { focus = false, toggle = false } = {}) {
+function setSelected(date, { focus = false, toggle = false, fly = false } = {}) {
   const previous = state.selectedDate;
   const next = date && state.model.byDate.has(date) && !(toggle && date === previous) ? date : null;
   if (next && !$('#details').contains(document.activeElement)) state.returnFocus = document.activeElement;
@@ -88,10 +121,27 @@ function setSelected(date, { focus = false, toggle = false } = {}) {
     setActiveCell(next, false);
   }
   sceneCall('setSelection', next);
+  if (next && fly) flyToDay(next);
+  // Closing the record after a fly-in returns the camera to the chosen view.
+  if (!next && state.flown) {
+    setFlown(false);
+    sceneCall('setCameraPreset', state.preset);
+  }
   hideTip();
   renderDetails();
+  writeDeepLink();
   $('#selection-status').textContent = next ? `${contributionText(state.model.byDate.get(next).count, next)}. Daily record pinned.` : 'Daily record unpinned.';
   if (next && focus) $('#details-title').focus({ preventScroll: true });
+}
+function flyToDay(date) {
+  if (!sceneHas('flyTo') || !state.model.byDate.has(date)) return;
+  sceneOptional('flyTo', date);
+  setFlown(true);
+}
+/** While the camera is framed on one day, the overlay type steps aside for the close-up. */
+function setFlown(flown) {
+  state.flown = flown;
+  $('#stage').classList.toggle('is-flown', flown);
 }
 function dismissDetails() {
   const returnTo = state.returnFocus;
@@ -100,16 +150,25 @@ function dismissDetails() {
 }
 function filteredDays() { return state.model.days.filter((day) => matchesFilter(day, state.model, state.filter)); }
 function setFilter(filter) {
-  if (!['all', 'top', 'streak', 'weekdays', 'weekends'].includes(filter)) return;
+  if (!FILTERS.includes(filter)) return;
   state.filter = filter;
-  $('#filter').value = filter;
   $('#filter').dataset.filter = filter;
+  $$('#filter button[data-filter]').forEach((chip) => chip.setAttribute('aria-pressed', String(chip.dataset.filter === filter)));
   sceneCall('setFilter', filter);
   syncCells();
   const labels = { all: 'all days', top: 'top contribution days', streak: 'the longest streak', weekdays: 'weekdays', weekends: 'weekends' };
   $('#filter-status').textContent = `Showing ${labels[filter]}.${filter === 'all' ? '' : ' Other dates are dimmed in the calendar.'}${filteredDays().length ? '' : ' No dates match this filter.'}`;
   $('#explore-day').disabled = !filteredDays().length;
   if (state.selectedDate) renderDetails();
+}
+function setPreset(name, { link = true } = {}) {
+  if (!PRESETS.includes(name)) return;
+  state.preset = name;
+  setFlown(false);
+  $$('[data-camera]').forEach((item) => item.setAttribute('aria-pressed', String(item.dataset.camera === name)));
+  $('#stage').dataset.preset = name;
+  sceneCall('setCameraPreset', name);
+  if (link) writeDeepLink();
 }
 function syncCells() {
   const at = replayAt(state.model, state.replayProgress);
@@ -126,12 +185,88 @@ function syncCells() {
   if (!current || !matchesFilter(current, state.model, state.filter)) setActiveCell(filteredDays().at(-1)?.date || null, false);
 }
 
-// ---------- details panel ----------
+// ---------- deep links: #day=YYYY-MM-DD&view=front|map|isometric|cinematic ----------
+function readDeepLink() {
+  const hash = location.hash.replace(/^#/, '');
+  if (!hash.includes('=')) return null;
+  const link = new URLSearchParams(hash);
+  const day = link.get('day');
+  const view = link.get('view');
+  const out = {};
+  if (day && /^\d{4}-\d{2}-\d{2}$/.test(day)) out.day = day;
+  if (view && PRESETS.includes(view)) out.view = view;
+  return out.day || out.view ? out : null;
+}
+function linkHash(date = state.selectedDate, view = state.preset) {
+  const link = new URLSearchParams();
+  if (date) link.set('day', date);
+  if (view && view !== 'front') link.set('view', view);
+  return link.toString();
+}
+function writeDeepLink() {
+  if (CAPTURE || !state.model) return;
+  const hash = linkHash();
+  // Plain section anchors (#craft) are left alone until there is a day or view to share.
+  if (!hash && !location.hash.includes('=')) return;
+  try { history.replaceState(history.state, '', `${location.pathname}${location.search}${hash ? `#${hash}` : ''}`); } catch (error) { /* history unavailable */ }
+}
+function applyDeepLink(link) {
+  if (!link || !state.model) return;
+  if (link.view) setPreset(link.view, { link: false });
+  if (link.day && state.model.byDate.has(link.day)) {
+    if (!matchesFilter(state.model.byDate.get(link.day), state.model, state.filter)) setFilter('all');
+    setSelected(link.day);
+    // Without an explicit view, frame the linked day once the scene can fly.
+    if (!link.view) {
+      if (sceneHas('flyTo')) flyToDay(link.day);
+      else state.pendingFly = link.day;
+    }
+  } else if (link.day) {
+    $('#selection-status').textContent = 'No daily record is available for the linked date.';
+  }
+}
+function shareUrl(date) {
+  const hash = linkHash(date);
+  return `${location.origin}${location.pathname}${hash ? `#${hash}` : ''}`;
+}
+async function copyLink() {
+  const url = shareUrl(state.selectedDate);
+  const status = $('#copy-status');
+  let copied = false;
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(url);
+      copied = true;
+    }
+  } catch (error) { /* fall back to a hidden selection below */ }
+  if (!copied) {
+    const button = $('#copy-link');
+    const area = el('textarea');
+    area.value = url;
+    area.setAttribute('readonly', '');
+    area.style.cssText = 'position:fixed;top:0;left:0;opacity:0;pointer-events:none';
+    document.body.append(area);
+    area.select();
+    try { copied = document.execCommand('copy'); } catch (error) { copied = false; }
+    area.remove();
+    button.focus({ preventScroll: true });
+  }
+  status.textContent = copied ? 'Link copied.' : `Copy this link: ${url}`;
+  clearTimeout(state.copyTimer);
+  state.copyTimer = setTimeout(() => { status.textContent = ''; }, copied ? 3500 : 12000);
+}
+
+// ---------- details panel (side panel on desktop, bottom sheet on phones) ----------
 function renderDetails() {
   const panel = $('#details');
   const day = state.model?.byDate.get(state.selectedDate);
+  if (day && panel.hidden) {
+    setSheet(mqMobile.matches ? 'half' : state.sheet);
+    if (mqMobile.matches) setDockSheet(false);
+  }
   panel.hidden = !day;
-  if (!day) return;
+  document.documentElement.classList.toggle('sheet-open', Boolean(day));
+  if (!day) { $('#copy-status').textContent = ''; return; }
   const model = state.model;
   const body = $('#details-body');
   const count = el('div', 'd-count');
@@ -159,10 +294,71 @@ function renderDetails() {
   $('#day-input').max = model.end;
   $('#day-input').value = day.date;
 }
-function stepSelection(direction) {
+function stepSelection(direction, { fly = true } = {}) {
   const choices = filteredDays();
-  const day = direction < 0 ? choices.findLast((item) => item.date < state.selectedDate) : choices.find((item) => item.date > state.selectedDate);
-  if (day) setSelected(day.date);
+  if (!choices.length) return;
+  const day = !state.selectedDate ? choices.at(-1)
+    : direction < 0 ? choices.findLast((item) => item.date < state.selectedDate) : choices.find((item) => item.date > state.selectedDate);
+  if (day) setSelected(day.date, { fly });
+}
+function setSheet(snap) {
+  if (!SNAPS.includes(snap)) return;
+  state.sheet = snap;
+  const panel = $('#details');
+  panel.dataset.snap = snap;
+  panel.style.removeProperty('height');
+  const next = SNAPS[(SNAPS.indexOf(snap) + 1) % SNAPS.length];
+  $('#details-handle').setAttribute('aria-label', `Daily record size: ${snap}. Press to ${next === 'peek' ? 'collapse' : 'expand'}; arrow keys resize.`);
+}
+function bindSheet() {
+  const panel = $('#details');
+  const handle = $('#details-handle');
+  let drag = null;
+  let suppressClick = false;
+  const heights = () => ({ peek: 196, half: innerHeight * 0.58, full: innerHeight - $('#top').offsetHeight - 8 });
+  handle.addEventListener('click', () => {
+    if (suppressClick) { suppressClick = false; return; }
+    setSheet(SNAPS[(SNAPS.indexOf(state.sheet) + 1) % SNAPS.length]);
+  });
+  handle.addEventListener('keydown', (event) => {
+    const index = SNAPS.indexOf(state.sheet);
+    if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
+      event.preventDefault();
+      setSheet(SNAPS[clamp(index + (event.key === 'ArrowUp' ? 1 : -1), 0, SNAPS.length - 1)]);
+    } else if (event.key === 'Home' || event.key === 'End') {
+      event.preventDefault();
+      setSheet(event.key === 'Home' ? 'peek' : 'full');
+    }
+  });
+  handle.addEventListener('pointerdown', (event) => {
+    if (!mqMobile.matches) return;
+    drag = { y: event.clientY, height: panel.getBoundingClientRect().height, moved: false };
+    handle.setPointerCapture(event.pointerId);
+  });
+  handle.addEventListener('pointermove', (event) => {
+    if (!drag) return;
+    const dy = event.clientY - drag.y;
+    if (Math.abs(dy) > 6) drag.moved = true;
+    if (!drag.moved) return;
+    panel.classList.add('is-dragging');
+    panel.style.height = `${clamp(drag.height - dy, 90, heights().full)}px`;
+  });
+  const end = () => {
+    if (!drag) return;
+    const moved = drag.moved;
+    drag = null;
+    panel.classList.remove('is-dragging');
+    if (!moved) return;
+    suppressClick = true;
+    setTimeout(() => { suppressClick = false; }, 0);
+    // Snap to the nearest point; a drag well below the peek closes the record.
+    const height = panel.getBoundingClientRect().height;
+    if (height < 130) { dismissDetails(); return; }
+    const targets = heights();
+    setSheet(SNAPS.reduce((best, snap) => (Math.abs(targets[snap] - height) < Math.abs(targets[best] - height) ? snap : best), 'half'));
+  };
+  handle.addEventListener('pointerup', end);
+  handle.addEventListener('pointercancel', end);
 }
 
 // ---------- heatmap ----------
@@ -312,13 +508,41 @@ function renderLegend() {
 }
 
 // ---------- stats ----------
+/** Counts a hero number up once on arrival; reduced motion and captures show the value at once. */
+function countUp(node, value) {
+  if (state.counted || mqReduce.matches || CAPTURE || state.deepLinked || !value) {
+    node.textContent = formatCount(value);
+    return;
+  }
+  const started = performance.now();
+  const frame = (now) => {
+    const t = Math.min(1, (now - started) / 1500);
+    node.textContent = formatCount(Math.round(value * (1 - (1 - t) ** 3)));
+    if (t < 1) requestAnimationFrame(frame);
+  };
+  node.textContent = formatCount(0);
+  requestAnimationFrame(frame);
+}
 function renderStats() {
   const model = state.model;
   const hasDays = model.days.length > 0;
-  $('#metric-total').textContent = state.available ? formatCount(model.total) : '—';
-  $('#metric-active').textContent = hasDays ? formatCount(model.activeCount) : '—';
+  if (state.available) countUp($('#metric-total'), model.total);
+  else $('#metric-total').textContent = '—';
+  if (hasDays) countUp($('#metric-active'), model.activeCount);
+  else $('#metric-active').textContent = '—';
   $('#metric-streak').replaceChildren(document.createTextNode(hasDays ? formatCount(model.streak.longest) : '—'));
   if (hasDays) $('#metric-streak').append(el('small', null, ' days'));
+  const monthKey = model.end ? model.end.slice(0, 7) : '';
+  const monthLabel = $('#metric-month-label');
+  if (monthKey) {
+    monthLabel.replaceChildren(el('span', 'label-long', formatDate(`${monthKey}-01`, { month: 'long' })), el('span', 'label-short', formatDate(`${monthKey}-01`, { month: 'short' })));
+    monthLabel.lastChild.setAttribute('aria-hidden', 'true');
+    countUp($('#metric-month'), model.monthly[monthKey] || 0);
+  } else {
+    monthLabel.textContent = 'This month';
+    $('#metric-month').textContent = '—';
+  }
+  state.counted = true;
   $('#stage-range').textContent = dateRange(model.start, model.end);
   $('#total-line').textContent = hasDays
     ? `${formatCount(model.total)} contributions · ${formatCount(model.privateCount)} private · ${dateRange(model.start, model.end)}`
@@ -329,10 +553,11 @@ function renderStats() {
   $('#replay-progress').disabled = !hasDays;
   // One step per day, so the arrow keys move the replay a day at a time.
   $('#replay-progress').step = model.days.length > 1 ? String(1 / (model.days.length - 1)) : 'any';
-  $('#filter').disabled = !hasDays;
+  $$('#filter button').forEach((chip) => { chip.disabled = !hasDays; });
   $('#highlights').disabled = !hasDays || !model.peak;
   $('#highlight-month').disabled = !model.bestMonth?.dates?.length;
   $('#download-card').disabled = !hasDays;
+  renderScrubber();
   renderMomentum();
   const lead = $('#weekday-lead');
   lead.replaceChildren(document.createTextNode(hasDays ? model.peak ? WEEKDAYS[model.busiestWeekday] : 'No activity yet' : 'No daily record'));
@@ -360,6 +585,39 @@ function renderStats() {
   $('#best-week-value').textContent = hasDays ? `${formatCount(model.bestWeek.total)} contributions` : '—';
   $('#best-week-range').textContent = hasDays ? model.peak ? dateRange(model.bestWeek.start, model.bestWeek.end) : 'No activity in observed weeks.' : 'No daily record yet';
   $('#best-week').disabled = !model.peak;
+}
+/** The replay scrubber: a sparkline of daily counts (square-root scale) and month ticks. */
+function renderScrubber() {
+  const model = state.model;
+  const days = model.days;
+  const span = Math.max(1, days.length - 1);
+  const width = 1000 / Math.max(1, days.length);
+  let path = '';
+  for (const day of days) {
+    if (!day.count) continue;
+    const x = day.idx / span * 1000;
+    const h = 3 + 35 * Math.sqrt(day.count / model.maxCount);
+    path += `M${(x - width * 0.42).toFixed(2)} 40V${(40 - h).toFixed(2)}H${(x + width * 0.42).toFixed(2)}V40Z`;
+  }
+  $('#spark-rest').setAttribute('d', path);
+  $('#spark-done').setAttribute('d', path);
+  const ticks = $('#replay-ticks');
+  ticks.replaceChildren();
+  let lastLabelled = -1;
+  const labelled = [];
+  for (const month of model.months) {
+    const first = model.byDate.get(month.dates[0]);
+    if (!first) continue;
+    const at = first.idx / span * 100;
+    const tick = el('span', null, month.label);
+    tick.style.left = `${at}%`;
+    // Months too close to the previous label keep the tick but drop the text.
+    if (lastLabelled >= 0 && at - lastLabelled < 4.2) tick.classList.add('is-minor');
+    else { lastLabelled = at; labelled.push(tick); }
+    ticks.append(tick);
+  }
+  // On phones only every other label shows, counted back from the current month.
+  labelled.reverse().forEach((tick, index) => { if (index % 2) tick.classList.add('is-mid'); });
 }
 function renderMomentum() {
   const model = state.model;
@@ -396,8 +654,12 @@ function exploreMonth(month) {
   selectHighlight(date);
 }
 function selectHighlight(date) {
-  setSelected(date, { focus: true });
-  if (!mqMobile.matches) $('#stage').scrollIntoView({ block: 'center', behavior: mqReduce.matches ? 'instant' : 'smooth' });
+  setSelected(date, { focus: true, fly: true });
+  // Bring the landscape back into view when the highlight was chosen further down the page.
+  const stage = $('#stage').getBoundingClientRect();
+  if (!mqMobile.matches && (stage.bottom < innerHeight * 0.5 || stage.top > innerHeight * 0.5)) {
+    $('#explore').scrollIntoView({ block: 'start', behavior: mqReduce.matches ? 'instant' : 'smooth' });
+  }
 }
 function setReplayProgress(progress) {
   state.replayProgress = Math.max(0, Math.min(1, Number(progress) || 0));
@@ -407,6 +669,9 @@ function setReplayProgress(progress) {
   $('#replay-date').textContent = at.date ? shortDate(at.date) : 'No daily record';
   $('#replay-total').textContent = state.available ? formatCount(at.total) : '—';
   slider.setAttribute('aria-valuetext', at.date ? `${shortDate(at.date)}, ${formatCount(at.total)} contributions to date` : 'No daily record');
+  // The played part of the sparkline lights up as the history advances.
+  const span = Math.max(1, state.model.days.length - 1);
+  $('#spark-clip-rect').setAttribute('width', String(at.index < 0 ? 0 : Math.min(1000, (at.index + 0.5) / span * 1000)));
   // Applied synchronously so a scrub is exact even when motion is off or reduced.
   sceneCall('setReplayProgress', state.replayProgress);
   syncCells();
@@ -448,32 +713,205 @@ function playReplay() {
 function syncMotion() {
   $('#btn-motion').textContent = state.motion ? 'Pause motion' : 'Enable motion';
   $('#btn-motion').dataset.state = state.motion ? 'on' : 'off';
-  $('#btn-motion').disabled = mqReduce.matches;
+  $('#btn-motion').disabled = mqReduce.matches || CAPTURE;
   $('#motion-note').textContent = mqReduce.matches ? 'Reduced motion is on. Camera motion and automatic replay are paused; you can still scrub the timeline.' : 'The landscape starts still. Motion is always optional.';
+  if (!state.motion || mqReduce.matches) sceneOptional('setParallax', 0, 0);
   if (mqReduce.matches) stopReplay();
   else syncReplay();
+  syncTilt();
 }
 function syncInteractive() {
   $('#stage').classList.toggle('is-interactive', state.interactive);
   $('#interactive-toggle').dataset.state = state.interactive ? 'on' : 'off';
   $('#interactive-toggle').textContent = state.interactive ? 'Done exploring' : 'Explore in 3D';
-  $('#stage-hint').textContent = state.interactive ? (mqCoarse.matches || mqMobile.matches ? 'Drag to orbit · Tap Done exploring to scroll' : 'Drag to orbit · Select a tower to inspect') : 'Scroll freely · Enable 3D to orbit';
+  $('#stage-hint').textContent = state.interactive ? (mqCoarse.matches || mqMobile.matches ? 'Drag to orbit · Tap Done exploring to scroll' : 'Each tower is one day · Drag to orbit · Select a tower') : 'Each tower is one day · Scroll freely · Enable 3D to orbit';
+}
+
+// ---------- dock sheet (phones) and layout measurements ----------
+function setDockSheet(open) {
+  $('#dock').classList.toggle('is-open', open);
+  $('#dock-more-toggle').setAttribute('aria-expanded', String(open));
+  $('#dock-more-toggle').setAttribute('aria-label', open ? 'Close more controls' : 'More controls');
+}
+function measureStage() {
+  const stage = $('#stage');
+  const dock = $('#dock');
+  const hero = $('#hero');
+  stage.style.setProperty('--dock-h', `${Math.round(dock.offsetHeight)}px`);
+  stage.style.setProperty('--stage-h', `${Math.round(stage.offsetHeight)}px`);
+  // The static landscape sits between the overlay type and the dock.
+  stage.style.setProperty('--fallback-top', `${Math.round(hero.offsetTop + hero.offsetHeight + (mqMobile.matches ? 10 : 22))}px`);
+}
+
+// ---------- parallax: pointer on desktop (motion on), device tilt on phones (explicit tap) ----------
+function bindParallax() {
+  const stage = $('#stage');
+  let frame = 0;
+  let pending = null;
+  const send = () => {
+    frame = 0;
+    if (pending) sceneOptional('setParallax', pending.x, pending.y);
+  };
+  const queue = (x, y) => {
+    pending = { x: clamp(x), y: clamp(y) };
+    if (!frame) frame = requestAnimationFrame(send);
+  };
+  stage.addEventListener('pointermove', (event) => {
+    // Never while dragging (orbit owns the pointer), under reduced motion or with motion off.
+    if (event.pointerType !== 'mouse' || event.buttons || !state.motion || mqReduce.matches || state.tilt || !sceneHas('setParallax')) return;
+    const box = stage.getBoundingClientRect();
+    queue((event.clientX - box.left) / box.width * 2 - 1, (event.clientY - box.top) / box.height * 2 - 1);
+  }, { passive: true });
+  stage.addEventListener('pointerleave', () => { if (!state.tilt) queue(0, 0); });
+  let base = null;
+  const onTilt = (event) => {
+    if (event.gamma == null || event.beta == null) return;
+    if (!base) base = { beta: event.beta, gamma: event.gamma };
+    queue((event.gamma - base.gamma) / 25, (event.beta - base.beta) / 25);
+  };
+  state.stopTilt = () => {
+    window.removeEventListener('deviceorientation', onTilt);
+    state.tilt = false;
+    base = null;
+    queue(0, 0);
+    syncTilt();
+  };
+  $('#btn-tilt').addEventListener('click', async () => {
+    if (state.tilt) return state.stopTilt();
+    try {
+      // iOS asks for permission behind an explicit tap.
+      if (typeof window.DeviceOrientationEvent?.requestPermission === 'function') {
+        const answer = await window.DeviceOrientationEvent.requestPermission();
+        if (answer !== 'granted') {
+          $('#motion-note').textContent = 'Tilt to look needs motion access. You can still drag to orbit.';
+          return;
+        }
+      }
+      window.addEventListener('deviceorientation', onTilt);
+      state.tilt = true;
+      syncTilt();
+    } catch (error) {
+      console.warn('Tilt to look unavailable:', error);
+      $('#motion-note').textContent = 'Tilt to look is unavailable on this device.';
+    }
+  });
+}
+function syncTilt() {
+  const button = $('#btn-tilt');
+  const supported = 'DeviceOrientationEvent' in window && mqCoarse.matches && !mqReduce.matches && !CAPTURE && sceneHas('setParallax');
+  button.hidden = !supported;
+  if (!supported && state.tilt) state.stopTilt?.();
+  button.textContent = state.tilt ? 'Stop tilting' : 'Tilt to look';
+  button.dataset.state = state.tilt ? 'on' : 'off';
+}
+
+// ---------- keyboard: 1–4 presets, Space replay, ←/→ day, Esc close, ? shortcuts ----------
+const isTyping = (target) => Boolean(target?.closest?.('input:not([type="range"]):not([type="button"]):not([type="checkbox"]), textarea, select, [contenteditable=""], [contenteditable="true"]'));
+const ownsSpace = (target) => Boolean(target?.closest?.('button, a[href], summary, input, select, textarea, [role="gridcell"], [contenteditable=""], [contenteditable="true"]'));
+const ownsArrows = (target) => Boolean(target?.closest?.('input, select, textarea, [role="grid"], [contenteditable=""], [contenteditable="true"], #details-handle'));
+function onShortcut(event) {
+  if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey || !state.model) return;
+  if ($('#shortcuts').open) return;
+  const target = event.target;
+  if (event.key === 'Escape') return onEscape();
+  if (isTyping(target)) return;
+  if (event.key === '?') {
+    event.preventDefault();
+    openShortcuts();
+  } else if (/^[1-4]$/.test(event.key) && !state.sceneUnavailable) {
+    event.preventDefault();
+    setPreset(PRESETS[Number(event.key) - 1]);
+  } else if (event.key === ' ' && !ownsSpace(target)) {
+    event.preventDefault();
+    playReplay();
+  } else if ((event.key === 'ArrowLeft' || event.key === 'ArrowRight') && !ownsArrows(target) && !event.shiftKey) {
+    event.preventDefault();
+    stepSelection(event.key === 'ArrowLeft' ? -1 : 1);
+  }
+}
+function onEscape() {
+  if ($('#dock').classList.contains('is-open')) {
+    setDockSheet(false);
+    $('#dock-more-toggle').focus({ preventScroll: true });
+    return;
+  }
+  if ($('#view-options').open) {
+    $('#view-options').open = false;
+    $('#view-options summary').focus({ preventScroll: true });
+    return;
+  }
+  if (state.selectedDate) dismissDetails();
+  if (state.interactive && (mqCoarse.matches || mqMobile.matches)) {
+    state.interactive = false;
+    sceneCall('setInteractive', false);
+    syncInteractive();
+  }
+}
+function openShortcuts() {
+  const dialog = $('#shortcuts');
+  if (dialog.open || typeof dialog.showModal !== 'function') return;
+  state.shortcutReturn = document.activeElement;
+  dialog.showModal();
+  $('#shortcuts-close').focus();
+}
+function bindShortcuts() {
+  const dialog = $('#shortcuts');
+  $('#shortcuts-open').addEventListener('click', openShortcuts);
+  $('#shortcuts-close').addEventListener('click', () => dialog.close());
+  // A click on the backdrop closes the sheet.
+  dialog.addEventListener('click', (event) => {
+    if (event.target !== dialog) return;
+    const box = dialog.getBoundingClientRect();
+    if (event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom) dialog.close();
+  });
+  // Focus trap: Tab cycles within the sheet (the modal dialog already makes the page inert).
+  dialog.addEventListener('keydown', (event) => {
+    if (event.key !== 'Tab') return;
+    const focusable = $$('button, a[href], [tabindex]:not([tabindex="-1"])', dialog).filter((node) => !node.disabled);
+    if (!focusable.length) return;
+    const first = focusable[0];
+    const last = focusable.at(-1);
+    if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+    else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+  });
+  dialog.addEventListener('close', () => {
+    const returnTo = state.shortcutReturn;
+    state.shortcutReturn = null;
+    if (returnTo?.isConnected && typeof returnTo.focus === 'function') returnTo.focus({ preventScroll: true });
+  });
 }
 
 // ---------- theme ----------
-function applyTheme(theme, persist) {
-  document.documentElement.dataset.theme = theme;
+function applyTheme(theme, { persist = false, animate = false } = {}) {
+  const root = document.documentElement;
+  // Page colours ease with the scene's sunset or moonrise; instant under reduced motion.
+  if (animate && !mqReduce.matches && !CAPTURE) {
+    root.classList.add('theme-fading');
+    clearTimeout(state.themeTimer);
+    state.themeTimer = setTimeout(() => root.classList.remove('theme-fading'), 1300);
+  }
+  root.dataset.theme = theme;
   if (persist) { try { localStorage.setItem('warroom-theme', theme); } catch (e) { /* storage unavailable */ } }
   $('#theme-toggle').setAttribute('aria-label', theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme');
   $('meta[name="theme-color"]').content = theme === 'dark' ? '#121d25' : '#f5f2e9';
   $('#stage-fallback').src = `./battlefield-${theme}.svg`;
   renderLegend();
   if (state.model) syncCells();
-  if (state.model?.days.length && !state.sceneUnavailable) init3D();
+  if (!state.model?.days.length || state.sceneUnavailable) return;
+  // A live scene changes its sky in place; a missing or disposed one is rebuilt (the previous behaviour).
+  if (sceneAlive() && typeof state.scene.setTheme === 'function') {
+    try {
+      state.scene.setTheme(theme, { animate: animate && !mqReduce.matches });
+      return;
+    } catch (error) {
+      console.warn('Landscape theme change:', error);
+    }
+  }
+  init3D();
 }
 function initTheme() {
-  applyTheme(currentTheme(), false);
-  $('#theme-toggle').addEventListener('click', () => applyTheme(currentTheme() === 'dark' ? 'light' : 'dark', true));
+  applyTheme(currentTheme());
+  $('#theme-toggle').addEventListener('click', () => applyTheme(currentTheme() === 'dark' ? 'light' : 'dark', { persist: true, animate: true }));
 }
 
 // ---------- 3D ----------
@@ -490,6 +928,7 @@ function fallback3D() {
   state.sceneGeneration++;
   disposeScene();
   state.sceneUnavailable = true;
+  if (state.arrival === 'pending' || state.arrival === 'playing') state.arrival = 'skipped';
   $('#atlas').classList.add('is-fallback');
   $('#stage').classList.remove('is-ready', 'is-interactive');
   $('#fallback-note').hidden = false;
@@ -497,10 +936,39 @@ function fallback3D() {
   $('#stage-fallback').hidden = false;
   $('#stage-loading').hidden = true;
   $('#view-options').open = false;
+  syncTilt();
+  mountVoyageOnce();
+}
+/** Resolves after the scene's first complete frame (scene.ready), or at once for older scenes. */
+function sceneReady(scene) {
+  const ready = scene.ready;
+  if (!ready || typeof ready.then !== 'function') return new Promise((resolve) => requestAnimationFrame(() => resolve()));
+  return Promise.race([
+    Promise.resolve(ready).catch((error) => console.warn('Landscape first frame:', error)),
+    new Promise((resolve) => setTimeout(resolve, 6000)),
+  ]);
+}
+/** Deep links, captures and reduced motion skip the arrival; a dolly already under way lands at once. */
+function skipArrival() {
+  if (state.arrival === 'done') return;
+  state.arrival = 'skipped';
+  sceneOptional('skipArrival');
+}
+function playArrivalOnce(scene) {
+  if (state.arrival !== 'pending') return;
+  if (mqReduce.matches || state.deepLinked || CAPTURE || typeof scene.playArrival !== 'function') {
+    skipArrival();
+    return;
+  }
+  state.arrival = 'playing';
+  Promise.resolve()
+    .then(() => scene.playArrival())
+    .catch((error) => console.warn('Landscape arrival:', error))
+    .finally(() => { if (state.arrival === 'playing') state.arrival = 'done'; });
 }
 async function init3D() {
   // ?flat forces the no-WebGL layout (handy for testing the fallback).
-  if (new URLSearchParams(location.search).has('flat') || !state.model.days.length) return fallback3D();
+  if (params.has('flat') || !state.model.days.length) return fallback3D();
   const generation = ++state.sceneGeneration;
   disposeScene();
   $('#stage').classList.remove('is-ready');
@@ -523,7 +991,7 @@ async function init3D() {
       },
       onPick(date) {
         if (generation !== state.sceneGeneration || !state.model.byDate.has(date)) return;
-        setSelected(date, { toggle: true, focus: mqMobile.matches });
+        setSelected(date, { toggle: true, focus: mqMobile.matches, fly: true });
       },
     });
     state.scene = scene;
@@ -537,15 +1005,55 @@ async function init3D() {
     state.sceneUnavailable = false;
     $('#atlas').classList.remove('is-fallback');
     $('#fallback-note').hidden = true;
+    syncInteractive();
+    syncTilt();
+    // A deep link, capture or reduced motion never plays the arrival: settle it before the first frame.
+    if (mqReduce.matches || state.deepLinked || CAPTURE) skipArrival();
+    await sceneReady(scene);
+    if (generation !== state.sceneGeneration) return;
+    // The static landscape cross-fades into the first complete WebGL frame.
     $('#stage').classList.add('is-ready');
     $('#stage-loading').hidden = true;
-    syncInteractive();
+    if (state.pendingFly) {
+      flyToDay(state.pendingFly);
+      state.pendingFly = null;
+    }
+    playArrivalOnce(scene);
+    mountVoyageOnce();
   } catch (error) {
     clearTimeout(timeout);
     if (generation !== state.sceneGeneration) return;
     console.warn('Interactive landscape unavailable:', error);
     fallback3D();
   }
+}
+
+// ---------- voyage: scroll-driven chapters over the pinned stage (site/voyage.js) ----------
+function mountVoyageOnce() {
+  if (state.voyageMounted || CAPTURE || !state.model) return;
+  state.voyageMounted = true;
+  import('./voyage.js').then(({ mountVoyage }) => {
+    if (typeof mountVoyage !== 'function') return;
+    state.voyage = mountVoyage({
+      root: $('#voyage'), model: state.model, getScene: () => state.scene, reducedMotion: mqReduce.matches,
+      onEnter() {
+        state.voyageActive = true;
+        stopReplay();
+        setDockSheet(false);
+        $('#view-options').open = false;
+      },
+      onExit() {
+        // Hand the landscape back as the visitor left it: their view, full history, no highlight.
+        state.voyageActive = false;
+        state.chapter = null;
+        setFlown(false);
+        sceneOptional('setHighlight', null);
+        setReplayProgress(1);
+        sceneCall('setCameraPreset', state.preset);
+      },
+      onChapter(chapter) { state.chapter = chapter?.id || null; },
+    });
+  }).catch((error) => console.warn('Voyage unavailable:', error));
 }
 function downloadCard() {
   const model = state.model;
@@ -621,6 +1129,7 @@ function bindControls() {
   $('#details-close').addEventListener('click', dismissDetails);
   $('#day-prev').addEventListener('click', () => stepSelection(-1));
   $('#day-next').addEventListener('click', () => stepSelection(1));
+  $('#copy-link').addEventListener('click', copyLink);
   $('#day-input').addEventListener('change', (event) => {
     if (!state.model.byDate.has(event.target.value)) {
       $('#selection-status').textContent = 'No daily record is available for that date.';
@@ -629,10 +1138,14 @@ function bindControls() {
     }
     const day = state.model.byDate.get(event.target.value);
     if (!matchesFilter(day, state.model, state.filter)) setFilter('all');
-    setSelected(day.date);
+    setSelected(day.date, { fly: true });
   });
-  $('#explore-day').addEventListener('click', () => setSelected(state.selectedDate || filteredDays().at(-1)?.date, { focus: true }));
-  $('#filter').addEventListener('change', (event) => setFilter(event.target.value));
+  $('#explore-day').addEventListener('click', () => setSelected(state.selectedDate || filteredDays().at(-1)?.date, { focus: true, fly: true }));
+  $$('#filter button[data-filter]').forEach((chip) => chip.addEventListener('click', () => {
+    // Single-select toggles: pressing the active chip again returns to all days.
+    const value = chip.dataset.filter;
+    setFilter(value === state.filter && value !== 'all' ? 'all' : value);
+  }));
   $('#highlights').addEventListener('change', (event) => {
     const model = state.model;
     const choice = event.target.value;
@@ -642,10 +1155,9 @@ function bindControls() {
     event.target.value = '';
   });
   $('#best-week').addEventListener('click', () => { setFilter('all'); selectHighlight(state.model.bestWeek.start); });
-  document.querySelectorAll('[data-camera]').forEach((button) => button.addEventListener('click', () => {
-    state.preset = button.dataset.camera;
-    document.querySelectorAll('[data-camera]').forEach((item) => item.setAttribute('aria-pressed', String(item === button)));
-    sceneCall('setCameraPreset', state.preset);
+  $$('[data-camera]').forEach((button) => button.addEventListener('click', () => {
+    setPreset(button.dataset.camera);
+    if (mqMobile.matches) setDockSheet(false);
   }));
   $('#btn-motion').addEventListener('click', () => {
     if (mqReduce.matches) return;
@@ -659,6 +1171,7 @@ function bindControls() {
     sceneCall('setInteractive', state.interactive);
     syncInteractive();
   });
+  $('#dock-more-toggle').addEventListener('click', () => setDockSheet(!$('#dock').classList.contains('is-open')));
   $('#replay-play').addEventListener('click', playReplay);
   $('#replay-progress').addEventListener('input', (event) => { stopReplay(); setReplayProgress(event.target.value); });
   $('#download-card').addEventListener('click', downloadCard);
@@ -674,19 +1187,21 @@ function bindControls() {
     syncInteractive();
   };
   mqCoarse.addEventListener('change', disableTouchInteraction);
-  mqMobile.addEventListener('change', disableTouchInteraction);
-  document.addEventListener('keydown', (event) => {
-    if (event.key !== 'Escape' || event.defaultPrevented) return;
-    $('#view-options').open = false;
-    if (state.selectedDate) dismissDetails();
-    if (state.interactive && (mqCoarse.matches || mqMobile.matches)) {
-      state.interactive = false;
-      sceneCall('setInteractive', false);
-      syncInteractive();
-    }
+  mqMobile.addEventListener('change', () => { disableTouchInteraction(); setDockSheet(false); measureStage(); });
+  document.addEventListener('keydown', onShortcut);
+  document.addEventListener('pointerdown', (event) => {
+    if (!$('#view-options').contains(event.target)) $('#view-options').open = false;
+    if (!$('#dock').contains(event.target)) setDockSheet(false);
   });
-  document.addEventListener('pointerdown', (event) => { if (!$('#view-options').contains(event.target)) $('#view-options').open = false; });
   document.addEventListener('visibilitychange', () => { if (document.hidden) stopReplay(); });
+  window.addEventListener('hashchange', () => {
+    const link = readDeepLink();
+    if (!link) return;
+    // A link opened on a page that is still arriving skips the rest of the dolly.
+    state.deepLinked = true;
+    if (state.arrival === 'pending' || state.arrival === 'playing') skipArrival();
+    applyDeepLink(link);
+  });
   window.addEventListener('scroll', () => {
     if (tip.hidden) return;
     // Keep a keyboard-focused cell's tooltip attached to it; otherwise drop the tooltip.
@@ -706,8 +1221,20 @@ function bindControls() {
       else hideTip();
     } else hideTip();
   }, { passive: true });
+  if ('ResizeObserver' in window) {
+    const observer = new ResizeObserver(() => measureStage());
+    [$('#stage'), $('#dock'), $('#hero')].forEach((node) => observer.observe(node));
+  }
+  measureStage();
+  bindSheet();
+  bindShortcuts();
+  bindParallax();
 }
 async function main() {
+  // The wheel hint the scene shows when plain scrolling passes over the landscape.
+  $('#stage-toast').textContent = `Scrolling moves the page · ${/Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent) ? '⌘' : 'Ctrl'} + scroll to zoom`;
+  const link = CAPTURE ? null : readDeepLink();
+  state.deepLinked = Boolean(link);
   initTheme();
   bindControls();
   let stats = {};
@@ -730,6 +1257,8 @@ async function main() {
   syncMotion();
   syncReplay();
   syncInteractive();
+  measureStage();
+  if (link) applyDeepLink(link);
   await init3D();
 }
 main().catch((error) => {

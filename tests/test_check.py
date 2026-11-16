@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 import subprocess
 import sys
@@ -357,10 +358,6 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(self.text.count("upload-pages-artifact"), 1)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class SocialCardTests(unittest.TestCase):
     def test_card_html_embeds_the_svg_and_identity(self) -> None:
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
@@ -372,3 +369,223 @@ class SocialCardTests(unittest.TestCase):
         self.assertIn("abhi-at-rei.github.io/abhi-at-rei", page)
         self.assertIn(f"width: {render_card.W}px; height: {render_card.H}px", page)
         self.assertEqual((render_card.W, render_card.H), (1200, 630))
+
+
+def riff(*chunks: tuple[bytes, bytes]) -> bytes:
+    body = b"WEBP" + b"".join(kind + len(data).to_bytes(4, "little") + data + (b"\0" if len(data) & 1 else b"") for kind, data in chunks)
+    return b"RIFF" + len(body).to_bytes(4, "little") + body
+
+
+ANIMATED = riff((b"VP8X", bytes([0x12, 0, 0, 0]) + bytes(6)), (b"ANIM", bytes(6)), (b"ANMF", bytes(16)), (b"ANMF", bytes(16)))
+STATIC = riff((b"VP8 ", bytes(10)))
+
+
+class OrbitTests(unittest.TestCase):
+    def test_animated_webp_passes(self) -> None:
+        self.assertEqual(check.orbit_errors(ANIMATED), [])
+
+    def test_rejects_non_webp_static_and_single_frame(self) -> None:
+        self.assertEqual(check.orbit_errors(b"GIF89a" + bytes(40)), ["not a WebP file"])
+        self.assertTrue(any("animated" in error for error in check.orbit_errors(STATIC)))
+        one = riff((b"VP8X", bytes([0x02, 0, 0, 0]) + bytes(6)), (b"ANIM", bytes(6)), (b"ANMF", bytes(16)))
+        self.assertTrue(any("two frames" in error for error in check.orbit_errors(one)))
+        flag_missing = riff((b"VP8X", bytes(10)), (b"ANIM", bytes(6)), (b"ANMF", bytes(16)), (b"ANMF", bytes(16)))
+        self.assertTrue(any("animated" in error for error in check.orbit_errors(flag_missing)))
+
+    def test_size_limit_is_2_5_mb(self) -> None:
+        self.assertEqual(check.MAX_ORBIT_BYTES, 2_500_000)
+        big = ANIMATED + bytes(check.MAX_ORBIT_BYTES)
+        self.assertTrue(any("size" in error for error in check.orbit_errors(big)))
+
+    def test_readme_may_name_orbit_webp_before_it_exists(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "generator").mkdir()
+            (root / "generator" / "build.py").write_text("RENDERERS = {'battlefield': 1}\n")
+            (root / "dist").mkdir()
+            self.assertEqual(check.readme_reference_errors([preview.RAW_OUTPUT + "orbit-light.webp", preview.RAW_OUTPUT + "orbit-dark.webp"], root), [])
+            self.assertEqual(len(check.readme_reference_errors([preview.RAW_OUTPUT + "orbit-mystery.webp"], root)), 1)
+
+    def test_webp_picture_pair_is_valid(self) -> None:
+        markup = picture(dark="https://x.test/output/orbit-dark.webp", light="https://x.test/output/orbit-light.webp")
+        self.assertEqual(check.picture_errors(parse(markup).pictures), [])
+        self.assertTrue(check.picture_errors(parse(picture(dark="https://x.test/orbit.webp", light="https://x.test/orbit.webp")).pictures))
+
+    def test_run_validates_recorded_files(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "dist").mkdir()
+            (root / "dist" / "orbit-light.webp").write_bytes(ANIMATED)
+            (root / "dist" / "orbit-dark.webp").write_bytes(STATIC)
+            import contextlib, io
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                code = check.run(root)
+            self.assertEqual(code, 1)
+            self.assertIn("PASS dist/orbit-light.webp", out.getvalue())
+            self.assertIn("FAIL dist/orbit-dark.webp", out.getvalue())
+
+
+class StatsExtrasTests(unittest.TestCase):
+    def errors(self, extra: dict) -> list[str]:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "stats.json"
+            path.write_text(json.dumps(extra))
+            return check.check_stats(path)
+
+    def test_achievements_and_highlights_are_allowed_and_optional(self) -> None:
+        self.assertEqual(self.errors({}), [])
+        self.assertEqual(self.errors({"achievements": [{"name": "YOLO", "slug": "yolo", "tier": 1}], "highlights": ["Developer Program Member"]}), [])
+        self.assertEqual(self.errors({"achievements": [], "highlights": []}), [])
+
+    def test_achievement_shape_is_enforced(self) -> None:
+        good = {"name": "YOLO", "slug": "yolo", "tier": 1}
+        bad = [
+            "x", [good, "y"], [{**good, "tier": 0}], [{**good, "tier": "2"}], [{**good, "tier": True}],
+            [{**good, "extra": 1}], [{"name": "YOLO", "slug": "yolo"}], [{**good, "name": 3}], [{**good, "slug": None}],
+        ]
+        for value in bad:
+            with self.subTest(value=value):
+                self.assertTrue(self.errors({"achievements": value}))
+
+    def test_highlights_must_be_strings(self) -> None:
+        self.assertTrue(self.errors({"highlights": "one"}))
+        self.assertTrue(self.errors({"highlights": ["ok", 2]}))
+
+
+class RecordOrbitTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        import record_orbit
+        cls.module = record_orbit
+
+    def test_loop_is_seamless_and_ping_pongs_in_front_of_the_city(self) -> None:
+        count = 72
+        poses = [self.module.pose_at(index, count) for index in range(count)]
+        self.assertAlmostEqual(poses[0][0], -35.0)
+        self.assertAlmostEqual(poses[count // 2][0], 35.0)
+        self.assertTrue(all(-35.0 - 1e-9 <= az <= 35.0 + 1e-9 for az, _ in poses))
+        # The frame after the last equals the first, so the loop has no jump.
+        wrap = self.module.pose_at(count, count)
+        self.assertAlmostEqual(wrap[0], poses[0][0])
+        self.assertAlmostEqual(wrap[1], poses[0][1])
+        steps = [abs(poses[i + 1][0] - poses[i][0]) for i in range(count - 1)]
+        self.assertLess(max(steps), 8.0)
+        self.assertEqual(self.module.pose_at(5, count), self.module.pose_at(5, count))
+
+    def test_budget_matches_the_checker(self) -> None:
+        self.assertEqual(self.module.MAX_BYTES, check.MAX_ORBIT_BYTES)
+        self.assertEqual((self.module.W, self.module.H), (840, 420))
+
+    def test_server_serves_a_directory_on_a_free_port(self) -> None:
+        import urllib.request
+        with tempfile.TemporaryDirectory() as directory:
+            (Path(directory) / "index.html").write_text("hi")
+            server, port = self.module.serve(Path(directory))
+            try:
+                self.assertGreater(port, 0)
+                with urllib.request.urlopen(f"http://127.0.0.1:{port}/") as response:
+                    self.assertEqual(response.read(), b"hi")
+            finally:
+                server.shutdown()
+
+    def test_encode_produces_a_valid_looping_animation(self) -> None:
+        try:
+            from PIL import Image
+        except ImportError:
+            self.skipTest("Pillow is CI-only")
+        frames = [Image.new("RGB", (64, 32), (index * 20, 40, 90)) for index in range(4)]
+        payload, quality = self.module.encode(frames, 12, 100_000)
+        self.assertEqual(check.orbit_errors(payload), [])
+        self.assertIn(quality, self.module.QUALITIES)
+
+    def test_write_is_atomic_and_readable(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "out" / "orbit-light.webp"
+            self.module.write_atomic(target, b"abc")
+            self.assertEqual(target.read_bytes(), b"abc")
+            self.assertEqual([path.name for path in target.parent.iterdir()], ["orbit-light.webp"])
+
+
+class OrbitWorkflowTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.text = (ROOT / ".github" / "workflows" / "profile.yml").read_text(encoding="utf-8")
+
+    def at(self, needle: str) -> int:
+        index = self.text.find(needle)
+        self.assertGreaterEqual(index, 0, f"workflow lacks {needle!r}")
+        return index
+
+    def test_step_order(self) -> None:
+        order = ["python generator/fetch.py", "python generator/build.py", "cp data/stats.json site/stats.json",
+                 "python -m unittest discover", "python scripts/check.py", "python scripts/render_card.py",
+                 "python scripts/record_orbit.py", "crazy-max/ghaction-github-pages", "actions/upload-pages-artifact", "actions/deploy-pages"]
+        positions = [self.at(item) for item in order]
+        self.assertEqual(positions, sorted(positions))
+
+    def test_playwright_and_pillow_are_installed_once_before_use(self) -> None:
+        self.assertEqual(self.text.count("playwright install"), 1)
+        self.assertEqual(self.text.count("pip install"), 1)
+        self.assertIn("pillow", self.text)
+        self.assertLess(self.at("playwright install"), self.at("python scripts/render_card.py"))
+
+    def test_orbit_failure_cannot_block_publication(self) -> None:
+        step = self.text[self.at("- name: Record orbit preview"):self.at("- name: Publish to output branch")]
+        self.assertIn("continue-on-error: true", step)
+        self.assertIn("timeout-minutes:", step)
+        restore = self.text[self.at("- name: Restore previous orbit recordings"):self.at("- name: Record orbit preview")]
+        self.assertIn("continue-on-error: true", restore)
+        self.assertLess(self.at("- name: Restore previous orbit recordings"), self.at("python scripts/record_orbit.py"))
+
+    def test_job_timeout_is_bounded(self) -> None:
+        match = re.search(r"timeout-minutes:\s*(\d+)", self.text)
+        self.assertIsNotNone(match)
+        self.assertTrue(15 <= int(match[1]) <= 60)
+
+
+class QualityWorkflowTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.text = (ROOT / ".github" / "workflows" / "quality.yml").read_text(encoding="utf-8")
+        cls.profile = (ROOT / ".github" / "workflows" / "profile.yml").read_text(encoding="utf-8")
+
+    def test_structure_and_triggers(self) -> None:
+        self.assertNotIn("\t", self.text)
+        for key in ("\nname: quality", "workflow_dispatch:", "workflow_run:", 'workflows: ["profile"]', "types: [completed]", "\njobs:"):
+            self.assertIn(key, self.text)
+        self.assertNotIn("pages: write", self.text)
+        self.assertNotIn("deploy-pages", self.text)
+
+    def test_runs_all_browsers_against_the_deployed_site(self) -> None:
+        self.assertIn("https://abhi-at-rei.github.io/abhi-at-rei/", self.text)
+        for browser in ("chromium", "webkit", "firefox"):
+            self.assertIn(browser, self.text)
+        self.assertIn("scripts/browser_check.py", self.text)
+        self.assertIn("--deployed", self.text)
+
+    def test_lighthouse_is_pinned_and_asserted(self) -> None:
+        self.assertRegex(self.text, r"npx --yes lighthouse@\d+\.\d+\.\d+")
+        self.assertIn("--preset=desktop", self.text)
+        self.assertRegex(self.text, r"(?i)mobile")
+        self.assertIn("performance", self.text)
+        self.assertIn("accessibility", self.text)
+        self.assertIn("0.9", self.text)
+        self.assertIn("upload-artifact", self.text)
+
+    def test_never_blocks_deploys_and_pins_actions_like_profile(self) -> None:
+        self.assertIn("workflow_run", self.text)
+        uses = dict(re.findall(r"uses:\s*([\w./-]+)@(\S+)", self.text))
+        profile_uses = dict(re.findall(r"uses:\s*([\w./-]+)@(\S+)", self.profile))
+        for name, version in uses.items():
+            self.assertRegex(version, r"^v\d+$", name)
+            if name in profile_uses:
+                self.assertEqual(version, profile_uses[name], name)
+        self.assertIn("actions/upload-artifact", uses)
+
+    def test_timeouts_are_bounded(self) -> None:
+        self.assertGreaterEqual(self.text.count("timeout-minutes:"), 2)
+
+
+if __name__ == "__main__":
+    unittest.main()

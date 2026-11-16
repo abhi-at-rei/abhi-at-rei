@@ -20,6 +20,11 @@ reviewable, auditable steps.
 
 [Explore my contribution world](https://abhi-at-rei.github.io/abhi-at-rei/) · [What I build](#what-i-build) · [Toolkit](#toolkit)
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/abhi-at-rei/abhi-at-rei/output/week-dark.svg">
+  <img alt="This week: seven bars for the last seven days, today's count, the live streak and this week compared with the week before. Refreshed daily." src="https://raw.githubusercontent.com/abhi-at-rei/abhi-at-rei/output/week-light.svg" width="100%">
+</picture>
+
 <a href="https://abhi-at-rei.github.io/abhi-at-rei/">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/abhi-at-rei/abhi-at-rei/output/battlefield-dark.svg">
@@ -29,6 +34,15 @@ reviewable, auditable steps.
 
 Each tower is a day. Height reflects its contribution count; gold through crimson shows
 intensity, not categories. The image is a preview; open the explorer for day-by-day detail.
+
+<a href="https://abhi-at-rei.github.io/abhi-at-rei/">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/abhi-at-rei/abhi-at-rei/output/orbit-dark.webp">
+    <img alt="A six-second flight around the 3D contribution world: the harbor, the ship and lighthouse, and one tower per day rising from the land." src="https://raw.githubusercontent.com/abhi-at-rei/abhi-at-rei/output/orbit-light.webp" width="100%">
+  </picture>
+</a>
+
+[Fly through the 3D War Room ↗](https://abhi-at-rei.github.io/abhi-at-rei/)
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/abhi-at-rei/abhi-at-rei/output/snake-dark.svg">
@@ -99,18 +113,16 @@ Playful editions of the same aggregate calendar data, not additional work claims
   </tr>
 </table>
 
-**Languages & UI:** Python · TypeScript · Rust · Kotlin · Swift · React · Vite · Tailwind ·
-**Platform & data:** AWS · Docker · Kubernetes · Terraform · PostgreSQL · Redis · GitHub Actions · FastAPI ·
-**AI:** LangGraph · LangChain · Claude · Amazon Bedrock · OpenAI models · agents · MCP
+<sub>**Languages & UI:** Python · TypeScript · Rust · Kotlin · Swift · React · Vite · Tailwind<br>**Platform & data:** AWS · Docker · Kubernetes · Terraform · PostgreSQL · Redis · GitHub Actions · FastAPI<br>**AI:** LangGraph · LangChain · Claude · Amazon Bedrock · OpenAI models · agents · MCP</sub>
 
 ## Achievements
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/abhi-at-rei/abhi-at-rei/output/seals-dark.svg">
-  <img alt="GitHub achievements as rings: Pull Shark ×2, Pair Extraordinaire, Quickdraw, YOLO and Developer Program Member." src="https://raw.githubusercontent.com/abhi-at-rei/abhi-at-rei/output/seals-light.svg" width="100%">
+  <img alt="GitHub achievements drawn as rings, refreshed daily from the live profile." src="https://raw.githubusercontent.com/abhi-at-rei/abhi-at-rei/output/seals-light.svg" width="100%">
 </picture>
 
-Pull Shark ×2 · Pair Extraordinaire · Quickdraw · YOLO · Developer Program Member
+[See every achievement on my GitHub profile ↗](https://github.com/abhi-at-rei?tab=achievements)
 
 ## The route so far
 

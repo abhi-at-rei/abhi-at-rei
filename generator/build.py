@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import battlefield  # noqa: E402
 import cards  # noqa: E402
 import snake  # noqa: E402
+import week  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 DIST = ROOT / "dist"
@@ -23,6 +24,7 @@ RENDERERS = {
     "seals": cards.render_seals,
     "battlefield": battlefield.render_battlefield,
     "snake": snake.render_snake,
+    "week": week.render_week,
 }
 
 

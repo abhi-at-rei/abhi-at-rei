@@ -11,8 +11,10 @@ Usage:
 from __future__ import annotations
 
 import datetime as dt
+import html as htmllib
 import json
 import os
+import re
 import subprocess
 import sys
 import urllib.request
@@ -83,6 +85,86 @@ def download_avatar(url: str) -> bool:
     except Exception:
         # Local fallback: some corporate proxies break Python TLS but not curl.
         return subprocess.run(["curl", "-sfL", "-o", str(target), url]).returncode == 0
+
+UA = "Mozilla/5.0 (compatible; profile-generator)"
+MAX_ACHIEVEMENTS = 24
+_CARD = re.compile(
+    r'data-achievement-slug="([a-z0-9][a-z0-9-]{0,63})"[^>]*>\s*<summary\b.*?</summary>',
+    re.S,
+)
+_NAME = re.compile(r"<h3\b[^>]*>(.*?)</h3>", re.S)
+_TIER = re.compile(r'achievement-tier-label[^>]*>\s*x\s*(\d{1,2})\s*<', re.S)
+_HIGHLIGHTS = re.compile(r'<h2[^>]*>\s*Highlights\s*</h2>\s*<ul\b.*?</ul>', re.S)
+
+
+def _text(fragment: str) -> str:
+    fragment = re.sub(r"<svg\b.*?</svg>", " ", fragment, flags=re.S)
+    return " ".join(htmllib.unescape(re.sub(r"<[^>]+>", " ", fragment)).split())
+
+
+def parse_achievements(page: str) -> tuple:
+    """Parse GitHub's public Achievements tab HTML.
+
+    Returns (achievements, highlights) in display order. Achievements are
+    {"name", "slug", "tier"} (tier 1 when no x2/x3/x4 label is shown).
+    Pure function, no network. Returns ([], []) when nothing matches.
+    """
+    found, seen = [], set()
+    for m in _CARD.finditer(page or ""):
+        slug = m.group(1)
+        nm = _NAME.search(m.group(0))
+        name = _text(nm.group(1)) if nm else ""
+        if not name or len(name) > 60 or slug in seen:
+            continue
+        seen.add(slug)
+        t = _TIER.search(m.group(0))
+        tier = min(max(int(t.group(1)), 1), 9) if t else 1
+        found.append({"name": name, "slug": slug, "tier": tier})
+        if len(found) >= MAX_ACHIEVEMENTS:
+            break
+    highlights = []
+    hm = _HIGHLIGHTS.search(page or "")
+    if hm:
+        for li in re.findall(r"<li\b.*?</li>", hm.group(0), flags=re.S):
+            label = _text(li)
+            if label and len(label) <= 60 and label not in highlights:
+                highlights.append(label)
+    return found, highlights
+
+
+def _get_page(url: str) -> str:
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept-Language": "en"})
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return resp.read().decode("utf-8", "replace")
+    except Exception:
+        # Local fallback: some corporate proxies break Python TLS but not curl.
+        return subprocess.run(
+            ["curl", "-sfL", "-m", "30", "-A", UA, "-H", "Accept-Language: en", url],
+            capture_output=True, text=True, check=True,
+        ).stdout
+
+
+def add_achievements(stats: dict) -> None:
+    """Scrape the public Achievements tab (GitHub has no API for it).
+
+    Best effort: on any failure the keys stay absent so the renderer falls back
+    to generator/achievements.json, and the run never fails.
+    """
+    stats.pop("achievements", None)
+    stats.pop("highlights", None)
+    try:
+        page = _get_page(f"https://github.com/{LOGIN}?tab=achievements")
+        found, highlights = parse_achievements(page)
+        if not found:
+            print("achievements: no matches (markup change or none earned); using fallback list")
+            return
+        stats["achievements"] = found
+        stats["highlights"] = highlights
+        print(f"achievements: {len(found)} live ({', '.join(a['name'] for a in found)}); "
+              f"{len(highlights)} highlights")
+    except Exception as exc:  # network, TLS, curl missing, markup surprises
+        print(f"achievements: scrape failed ({type(exc).__name__}); using fallback list")
 
 
 def streaks(days: list[dict], today: str) -> dict:
@@ -196,6 +278,7 @@ def main() -> None:
         sys.exit(f"GraphQL errors: {raw['errors']}")
     stats = derive(raw)
     stats["avatar"] = "data/avatar.png" if download_avatar(raw["data"]["user"]["avatarUrl"]) else None
+    add_achievements(stats)
     OUT.parent.mkdir(parents=True, exist_ok=True)
     OUT.write_text(json.dumps(stats, indent=1))
     t = stats["totals"]

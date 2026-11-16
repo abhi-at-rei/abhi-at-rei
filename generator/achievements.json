@@ -1,10 +1,29 @@
 {
-  "_note": "GitHub has no achievements API. Mirror the profile's Achievements tab here when it changes.",
+  "_note": "FALLBACK ONLY. generator/fetch.py scrapes the live Achievements tab daily into stats.json (stats['achievements'] and stats['highlights']); render_seals uses these entries only when that scrape is absent (offline, markup change, zero matches). 'achievements' is the fallback display list; 'catalog' maps every known achievement or highlight (id = GitHub slug) to its ring engraving (word, at most 6 letters) and plain-English meaning. Unknown names still render with a generic engraving. Sources: docs.github.com/en/account-and-profile/reference/profile-reference and the community catalog github.com/christianalberto/github-profile-achievements (checked November 2026).",
   "achievements": [
-    {"id": "pull-shark", "name": "Pull Shark", "tier": 2, "meaning": "Merged pull requests"},
-    {"id": "pair-extraordinaire", "name": "Pair Extraordinaire", "tier": 1, "meaning": "Co-authored merged work"},
-    {"id": "quickdraw", "name": "Quickdraw", "tier": 1, "meaning": "Closed an issue/PR within 5 minutes"},
-    {"id": "yolo", "name": "YOLO", "tier": 1, "meaning": "Merged a pull request solo"},
-    {"id": "developer-program", "name": "Developer Program Member", "tier": 1, "meaning": "GitHub Developer Program"}
+    {"id": "pull-shark", "name": "Pull Shark", "tier": 2},
+    {"id": "pair-extraordinaire", "name": "Pair Extraordinaire", "tier": 1},
+    {"id": "quickdraw", "name": "Quickdraw", "tier": 1},
+    {"id": "yolo", "name": "YOLO", "tier": 1},
+    {"id": "developer-program-member", "name": "Developer Program Member", "tier": 1}
+  ],
+  "catalog": [
+    {"id": "pull-shark", "name": "Pull Shark", "word": "MERGE", "meaning": "Merged pull requests"},
+    {"id": "pair-extraordinaire", "name": "Pair Extraordinaire", "word": "DUO", "meaning": "Co-authored merged work"},
+    {"id": "quickdraw", "name": "Quickdraw", "word": "SWIFT", "meaning": "Closed in under 5 minutes"},
+    {"id": "yolo", "name": "YOLO", "word": "BOLD", "meaning": "Merged with no review"},
+    {"id": "starstruck", "name": "Starstruck", "word": "STARS", "meaning": "A repository earned many stars"},
+    {"id": "galaxy-brain", "name": "Galaxy Brain", "word": "SAGE", "meaning": "Accepted discussion answers"},
+    {"id": "public-sponsor", "name": "Public Sponsor", "word": "ALLY", "meaning": "Sponsors open source work"},
+    {"id": "finishing-touch", "name": "Finishing Touch", "word": "POLISH", "meaning": "Merged interface quality fixes"},
+    {"id": "arctic-code-vault-contributor", "name": "Arctic Code Vault Contributor", "word": "VAULT", "meaning": "Code in the 2020 Arctic archive"},
+    {"id": "mars-2020-contributor", "name": "Mars 2020 Contributor", "word": "MARS", "meaning": "Code used on the Mars helicopter"},
+    {"id": "heart-on-your-sleeve", "name": "Heart On Your Sleeve", "word": "HEART", "meaning": "Heart reactions given"},
+    {"id": "open-sourcerer", "name": "Open Sourcerer", "word": "MAGE", "meaning": "Merged PRs across public repos"},
+    {"id": "developer-program-member", "name": "Developer Program Member", "word": "CREW", "meaning": "GitHub Developer Program"},
+    {"id": "pro", "name": "Pro", "word": "PRO", "meaning": "GitHub Pro subscriber"},
+    {"id": "security-bug-bounty-hunter", "name": "Security Bug Bounty Hunter", "word": "HUNTER", "meaning": "Found GitHub security bugs"},
+    {"id": "github-campus-expert", "name": "GitHub Campus Expert", "word": "CAMPUS", "meaning": "GitHub Campus Program"},
+    {"id": "security-advisory-credit", "name": "Security advisory credit", "word": "GUARD", "meaning": "Credited security advisory"}
   ]
 }

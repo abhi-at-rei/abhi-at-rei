@@ -1,3 +1,38 @@
+# CURRENT STATE — November 16, 2026 (immersive build, all roadmap phases)
+
+Read this first; the October sections below are history. The live profile and Pages site are
+deployed by `.github/workflows/profile.yml` on every push to `main` and daily.
+
+## What changed in this build
+
+Six parallel lanes built every phase in `ROADMAP.md` against its "Build contract":
+
+- **Scene (`site/scene.js`):** current month always labelled ("Nov 289 · now"); peak label
+  avoids the sun, moon and other labels; rounded towers with base shading, glass panes, lit
+  windows in the dark theme scaled by each day's count, a peak beacon; animated day-to-night
+  `setTheme(…, {animate:true})`; tower reflections, ship bob, sweeping lighthouse beam, birds;
+  rain over quiet weeks and embers from the top-10 days; textured skyline and stars; a 2.5 s
+  arrival; plain wheel scrolls the page. New API: `ready`, `playArrival`, `skipArrival`,
+  `flyTo`, `get/setCameraPose`, `poseForRange`, `setHighlight`, `setParallax`.
+- **Page (`site/index.html`, `style.css`, `app.js`):** sticky full-bleed hero with overlay
+  type and metric chips; docked controls with a sparkline scrubber, preset buttons and filter
+  chips; static SVG cross-fades into WebGL; deep links `#day=…&view=…` with "Copy link";
+  keyboard shortcuts and a `?` sheet; phone bottom sheet with snap points; tilt/pointer
+  parallax; `?capture=orbit` mode.
+- **Voyage (`site/voyage.js`, `voyage.css`):** five chapters from `buildChapters` scroll over
+  the pinned stage, moving the camera, replay and highlight; snaps under reduced motion.
+- **README:** "This week" strip (`generator/week.py`), current month in the battlefield row,
+  gentle battlefield motion, the fly-through WebP, achievements line linking to the tab.
+- **Achievements:** `fetch.py` scrapes the profile's Achievements tab (safe fallback);
+  `render_seals` adapts to 1–10 rings with GitHub's tier colours.
+- **Tooling:** `scripts/record_orbit.py` (CI records the WebP before publishing and keeps the
+  previous clip on failure); `browser_check.py` covers the new API, deep links, voyage, wheel
+  scrolling, keyboard and a 600 KB transfer budget in chromium/webkit/firefox;
+  `.github/workflows/quality.yml` runs those and Lighthouse (≥ 90) after each deploy.
+- **Model:** `buildChapters(model)` in `site/model.js`, tested in `tests/model.test.js`.
+
+---
+
 # CURRENT STATE — October 26, 2026 (Claude integration pass, after Devin)
 
 Read this section first. It supersedes the Devin handover and the historical notes below.

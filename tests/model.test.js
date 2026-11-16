@@ -1,4 +1,4 @@
-import { buildModel, matchesFilter, replayAt, contributionText } from '../site/model.js';
+import { buildModel, buildChapters, matchesFilter, replayAt, contributionText } from '../site/model.js';
 
 const equal = (actual, expected, message) => {
   if (JSON.stringify(actual) !== JSON.stringify(expected)) throw new Error(`${message}: ${JSON.stringify(actual)} !== ${JSON.stringify(expected)}`);
@@ -60,5 +60,17 @@ export function runModelTests() {
   const future = buildModel(fixture('2026-01-01', [0], '2026-02-01'));
   equal([future.observedDays, future.momentum.comparable], [0, false], 'No observed account days');
   finite(future);
+  equal(buildChapters(empty), [], 'No chapters without data');
+  const story = buildChapters(buildModel(fixture('2026-01-01', [0, 0, 2, 3, 0, 1, 9, 4, 4, 4, 0, 0, 1, 0], '2026-01-02')));
+  equal(story.map((c) => c.id), ['sail', 'first-streak', 'peak', 'best-week', 'now'], 'Chapters in date order');
+  equal(story[0].start, '2026-01-02', 'Sail uses the join date');
+  equal([story[1].start, story[1].end, story[1].dates.length], ['2026-01-03', '2026-01-04', 2], 'First streak is the first run of two or more days');
+  equal([story[2].start, story[2].metrics[0].value], ['2026-01-07', '9'], 'Peak chapter');
+  equal(story.every((c) => c.progress >= 0 && c.progress <= 1 && c.kicker === `Chapter ${c.index + 1}`), true, 'Chapter progress and numbering');
+  equal(story[story.length - 1].progress, 1, 'Now ends the replay');
+  const quiet = buildChapters(buildModel(fixture('2026-01-01', Array(10).fill(0))));
+  equal(quiet.map((c) => c.id), ['sail', 'now'], 'A quiet year tells a short story');
+  const oldJoin = buildChapters(buildModel(fixture('2026-01-01', [0, 5, 0], '2025-01-01')));
+  equal([oldJoin[0].id, oldJoin[0].start], ['sail', '2026-01-02'], 'Sail falls back to the first active day');
   return { passed: true };
 }

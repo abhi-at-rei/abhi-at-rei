@@ -171,3 +171,86 @@ export function replayAt(model, progress) {
   const index = Math.round(p * (model.days.length - 1));
   return { index, date: model.days[index].date, total: model.days[index].cumulative };
 }
+
+// The voyage: story chapters derived from the calendar, in date order. A chapter is
+// omitted when its data does not exist, so an empty or quiet year tells a shorter story.
+export function buildChapters(model) {
+  const days = model?.days || [];
+  if (!days.length) return [];
+  const long = { month: 'long', day: 'numeric', year: 'numeric' };
+  const progressOf = (date) => {
+    const day = model.byDate.get(date);
+    return day && days.length > 1 ? day.idx / (days.length - 1) : 1;
+  };
+  const span = (start, end) => {
+    if (start === end) return formatDate(start, long);
+    const year = formatDate(end, { year: 'numeric' });
+    if (start.slice(0, 7) === end.slice(0, 7)) return `${formatDate(start, { month: 'long', day: 'numeric' })}–${formatDate(end, { day: 'numeric' })}, ${year}`;
+    return `${formatDate(start)} – ${formatDate(end)}, ${year}`;
+  };
+  const chapters = [];
+  const sailDate = model.joined && model.joined >= model.start ? model.joined : '';
+  const firstActive = days.find((day) => day.count > 0);
+  if (sailDate || firstActive) {
+    const date = sailDate || firstActive.date;
+    chapters.push({
+      id: 'sail', title: 'Set sail', dates: [date], start: date, end: date, progress: progressOf(date),
+      body: sailDate ? `The record begins on ${formatDate(date, long)}.` : `The first active day on record: ${formatDate(date, long)}.`,
+      metrics: [],
+    });
+  }
+  // The first run of two or more consecutive active days, at its full length.
+  let firstStreak = null;
+  let run = [];
+  for (const day of days) {
+    const extends_ = day.count > 0 && run.length && +toUTC(day.date) - +toUTC(run[run.length - 1].date) === DAY;
+    if (extends_) { run.push(day); continue; }
+    if (run.length >= 2) break;
+    run = day.count > 0 ? [day] : [];
+  }
+  if (run.length >= 2) firstStreak = run;
+  if (firstStreak) {
+    const start = firstStreak[0].date;
+    const end = firstStreak[firstStreak.length - 1].date;
+    const total = firstStreak.reduce((sum, day) => sum + day.count, 0);
+    chapters.push({
+      id: 'first-streak', title: 'The first streak', dates: firstStreak.map((day) => day.date), start, end, progress: progressOf(end),
+      body: `${firstStreak.length} days in a row, ${span(start, end)}.`,
+      metrics: [{ label: 'Days', value: formatCount(firstStreak.length) }, { label: 'Contributions', value: formatCount(total) }],
+    });
+  }
+  if (model.bestWeek?.total > 0 && model.bestWeek.start) {
+    const { start, end, total } = model.bestWeek;
+    chapters.push({
+      id: 'best-week', title: 'The best week', dates: days.filter((day) => day.date >= start && day.date <= end).map((day) => day.date),
+      start, end, progress: progressOf(end),
+      body: `${formatCount(total)} contributions in the week of ${span(start, end)}.`,
+      metrics: [{ label: 'Contributions', value: formatCount(total) }],
+    });
+  }
+  if (model.peak) {
+    const { date, count: n } = model.peak;
+    chapters.push({
+      id: 'peak', title: 'The peak', dates: [date], start: date, end: date, progress: progressOf(date),
+      body: `${formatCount(n)} contribution${n === 1 ? '' : 's'} on ${formatDate(date, long)}, the busiest day on record.`,
+      metrics: [{ label: 'Contributions', value: formatCount(n) }],
+    });
+  }
+  const end = model.end;
+  const monthKey = end.slice(0, 7);
+  const monthTotal = model.monthly[monthKey] || 0;
+  const monthName = formatDate(`${monthKey}-01`, { month: 'long' });
+  const live = model.streak.current;
+  chapters.push({
+    id: 'now', title: 'Now', dates: days.filter((day) => day.date.startsWith(monthKey)).map((day) => day.date),
+    start: `${monthKey}-01` < model.start ? model.start : `${monthKey}-01`, end, progress: 1,
+    body: `${formatCount(monthTotal)} contribution${monthTotal === 1 ? '' : 's'} so far in ${monthName}${live > 1 ? `, on a ${live}-day streak` : ''}.`,
+    metrics: [{ label: monthName, value: formatCount(monthTotal) }, { label: 'This year', value: formatCount(model.total) }],
+  });
+  // Chapters are told in date order; a later chapter on the same day as an earlier one is dropped.
+  const seen = new Set();
+  return chapters
+    .sort((a, b) => a.end.localeCompare(b.end) || (a.id === 'now') - (b.id === 'now'))
+    .filter((chapter) => { const key = `${chapter.start}|${chapter.end}`; if (seen.has(key) && chapter.id !== 'now') return false; seen.add(key); return true; })
+    .map((chapter, index) => ({ ...chapter, index, kicker: `Chapter ${index + 1}` }));
+}

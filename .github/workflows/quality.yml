@@ -1,0 +1,103 @@
+# Release quality gates for the deployed War Room (ROADMAP Phase 6): the browser checks in
+# Chromium, WebKit and Firefox, and Lighthouse on the desktop and mobile presets.
+# This workflow only reads the live site and never deploys or blocks the `profile` workflow:
+# it runs after "profile" completes (or by hand) and reports through its own status and artifacts.
+name: quality
+
+on:
+  workflow_dispatch:
+  workflow_run:
+    workflows: ["profile"]
+    types: [completed]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: quality
+  cancel-in-progress: true
+
+env:
+  SITE_URL: https://abhi-at-rei.github.io/abhi-at-rei/
+
+jobs:
+  browsers:
+    # A failed profile run publishes nothing new, so there is nothing fresh to check.
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [chromium, webkit, firefox]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install Playwright and the browser
+        run: |
+          pip install --quiet playwright
+          python -m playwright install --with-deps ${{ matrix.browser }}
+
+      # --deployed: the page is the site root, there is no tests/ or .preview/ to open.
+      # Software WebGL keeps the scene available on a GPU-less runner.
+      - name: Browser checks (${{ matrix.browser }})
+        run: >
+          python scripts/browser_check.py
+          --base "$SITE_URL" --deployed --endpoint /
+          --browser ${{ matrix.browser }} --channel ""
+          --out "$RUNNER_TEMP/browser-check-${{ matrix.browser }}"
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: browser-check-${{ matrix.browser }}
+          path: ${{ runner.temp }}/browser-check-${{ matrix.browser }}
+          if-no-files-found: ignore
+
+  lighthouse:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        preset: [desktop, mobile]
+    steps:
+      - uses: actions/checkout@v7
+
+      # Lighthouse 12.8.2 needs Node 18 or newer, which every GitHub runner image provides;
+      # Chrome comes preinstalled as well. Pin the version so scores stay comparable run to run.
+      - name: Lighthouse (${{ matrix.preset }})
+        run: |
+          mkdir -p "$RUNNER_TEMP/lighthouse"
+          preset=""
+          if [ "${{ matrix.preset }}" = "desktop" ]; then preset="--preset=desktop"; fi
+          npx --yes lighthouse@12.8.2 "$SITE_URL" $preset \
+            --only-categories=performance,accessibility \
+            --chrome-flags="--headless=new --no-sandbox" \
+            --output=json --output=html \
+            --output-path="$RUNNER_TEMP/lighthouse/${{ matrix.preset }}"
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: lighthouse-${{ matrix.preset }}
+          path: ${{ runner.temp }}/lighthouse
+          if-no-files-found: ignore
+
+      - name: Assert performance and accessibility are at least 90
+        run: |
+          python3 - "$RUNNER_TEMP/lighthouse/${{ matrix.preset }}.report.json" <<'PY'
+          import json, sys
+          categories = json.load(open(sys.argv[1]))["categories"]
+          failed = False
+          for name in ("performance", "accessibility"):
+              score = categories[name]["score"]
+              print(f"{name}: {score * 100:.0f}")
+              failed = failed or score < 0.9
+          sys.exit(1 if failed else 0)
+          PY
